@@ -8,6 +8,7 @@ pub mod hash;
 pub mod ids;
 pub mod install;
 pub mod lock;
+pub mod onboarding;
 pub mod paths;
 pub mod project;
 pub mod registry;

@@ -1,8 +1,10 @@
 use crate::core::{
+    adopt::{project_adopt_all, ProjectAdoptRequest},
     agents::AgentConfig,
     config::{read_config, RecentProject},
     ids::{AgentId, SkillId},
     install::{uninstall_skill, UninstallSkillRequest},
+    onboarding::{project_onboarding_scan, ProjectOnboardingScanRequest},
     paths::AppPaths,
     project::{
         deploy_project_skill, disable_project_skill, enable_project_skill,
@@ -105,6 +107,22 @@ pub struct GuiController {
     paths: AppPaths,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GuiControllerOutcome {
+    None,
+    ProjectScan {
+        project_path: Utf8PathBuf,
+        discovered_unmanaged_count: usize,
+        adopt_result: Option<ProjectAdoptAllSummary>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectAdoptAllSummary {
+    pub imported: usize,
+    pub conflicts: usize,
+}
+
 impl GuiController {
     pub fn new(paths: AppPaths) -> Self {
         Self { paths }
@@ -114,8 +132,8 @@ impl GuiController {
         &self.paths
     }
 
-    pub fn execute(&self, intent: &GuiActionIntent) -> Result<()> {
-        match intent {
+    pub fn execute(&self, intent: &GuiActionIntent) -> Result<GuiControllerOutcome> {
+        let outcome = match intent {
             GuiActionIntent::ScanSkill { skill_id } => {
                 if let Some(skill) = read_skills_registry(&self.paths)?
                     .skills
@@ -124,12 +142,14 @@ impl GuiController {
                 {
                     let _findings = scan_skill_dir(&skill.managed_path)?;
                 }
+                GuiControllerOutcome::None
             }
             GuiActionIntent::UninstallSkill { skill_id } => {
                 uninstall_skill(UninstallSkillRequest {
                     app_paths: &self.paths,
                     query: skill_id.as_str(),
                 })?;
+                GuiControllerOutcome::None
             }
             GuiActionIntent::DeploySkill {
                 project_path,
@@ -142,6 +162,7 @@ impl GuiController {
                     agent_id,
                     skill_query: skill_id.as_str(),
                 })?;
+                GuiControllerOutcome::None
             }
             GuiActionIntent::EnableDeployment {
                 project_path,
@@ -154,6 +175,7 @@ impl GuiController {
                     agent_id,
                     skill_query: skill_name,
                 })?;
+                GuiControllerOutcome::None
             }
             GuiActionIntent::DisableDeployment {
                 project_path,
@@ -166,6 +188,7 @@ impl GuiController {
                     agent_id,
                     skill_query: skill_name,
                 })?;
+                GuiControllerOutcome::None
             }
             GuiActionIntent::RemoveDeployment {
                 project_path,
@@ -180,6 +203,7 @@ impl GuiController {
                     skill_query: skill_name,
                     force: *force,
                 })?;
+                GuiControllerOutcome::None
             }
             GuiActionIntent::RedeployDeployment {
                 project_path,
@@ -196,14 +220,51 @@ impl GuiController {
                     overwrite: *overwrite,
                     promote: *promote,
                 })?;
+                GuiControllerOutcome::None
             }
-            GuiActionIntent::RefreshProject { .. }
-            | GuiActionIntent::ProjectAdoptAll { .. }
-            | GuiActionIntent::OpenProject { .. }
+            GuiActionIntent::RefreshProject { project_path } => {
+                let report = project_onboarding_scan(ProjectOnboardingScanRequest {
+                    app_paths: &self.paths,
+                    project_path,
+                })?;
+                GuiControllerOutcome::ProjectScan {
+                    project_path: report.project_path,
+                    discovered_unmanaged_count: report.discovered.len(),
+                    adopt_result: None,
+                }
+            }
+            GuiActionIntent::ProjectAdoptAll { project_path } => {
+                let config = read_config(&self.paths)?;
+                let mut imported = 0;
+                let mut conflicts = 0;
+                for agent in config.agents.iter().filter(|agent| agent.enabled) {
+                    let report = project_adopt_all(ProjectAdoptRequest {
+                        app_paths: &self.paths,
+                        project_path,
+                        agent_id: &agent.id,
+                        skill_name: "",
+                    })?;
+                    imported += report.imported;
+                    conflicts += report.conflicts;
+                }
+                let report = project_onboarding_scan(ProjectOnboardingScanRequest {
+                    app_paths: &self.paths,
+                    project_path,
+                })?;
+                GuiControllerOutcome::ProjectScan {
+                    project_path: report.project_path,
+                    discovered_unmanaged_count: report.discovered.len(),
+                    adopt_result: Some(ProjectAdoptAllSummary {
+                        imported,
+                        conflicts,
+                    }),
+                }
+            }
+            GuiActionIntent::OpenProject { .. }
             | GuiActionIntent::EditAgent { .. }
-            | GuiActionIntent::AddCustomAgent => {}
-        }
-        Ok(())
+            | GuiActionIntent::AddCustomAgent => GuiControllerOutcome::None,
+        };
+        Ok(outcome)
     }
 }
 
@@ -222,6 +283,7 @@ pub struct ProjectSummary {
     pub path: Utf8PathBuf,
     pub deployment_count: usize,
     pub discovered_unmanaged_count: usize,
+    pub last_adopt_all_result: Option<ProjectAdoptAllSummary>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -293,6 +355,7 @@ impl GuiModel {
                     path: project.path.clone(),
                     deployment_count,
                     discovered_unmanaged_count: 0,
+                    last_adopt_all_result: None,
                 }
             })
             .collect::<Vec<_>>();
@@ -544,7 +607,7 @@ impl GuiModel {
         let selected_deployment = self.selected_deployment.clone();
         let pending_remove_confirmation = self.pending_remove_confirmation.clone();
         let pending_intents = self.pending_intents.clone();
-        controller.execute(&intent)?;
+        let outcome = controller.execute(&intent)?;
         *self = Self::load(controller.paths())?;
         self.active_view = active_view;
         self.active_scope = active_scope;
@@ -573,7 +636,45 @@ impl GuiModel {
                 .any(|deployment| deployment.id == *pending)
         });
         self.pending_intents = pending_intents;
+        self.apply_controller_outcome(outcome);
         Ok(Some(intent))
+    }
+
+    fn apply_controller_outcome(&mut self, outcome: GuiControllerOutcome) {
+        match outcome {
+            GuiControllerOutcome::None => {}
+            GuiControllerOutcome::ProjectScan {
+                project_path,
+                discovered_unmanaged_count,
+                adopt_result,
+            } => {
+                let deployment_count = self
+                    .deployments
+                    .iter()
+                    .filter(|deployment| deployment.project_path == project_path)
+                    .count();
+                if let Some(summary) = self
+                    .project_summaries
+                    .iter_mut()
+                    .find(|summary| summary.path == project_path)
+                {
+                    summary.deployment_count = deployment_count;
+                    summary.discovered_unmanaged_count = discovered_unmanaged_count;
+                    summary.last_adopt_all_result = adopt_result;
+                } else {
+                    self.project_summaries.push(ProjectSummary {
+                        name: project_path
+                            .file_name()
+                            .map(ToOwned::to_owned)
+                            .unwrap_or_else(|| project_path.to_string()),
+                        path: project_path,
+                        deployment_count,
+                        discovered_unmanaged_count,
+                        last_adopt_all_result: adopt_result,
+                    });
+                }
+            }
+        }
     }
 
     pub fn renderable_view(&self) -> RenderableView {

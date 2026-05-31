@@ -1,14 +1,15 @@
 use camino::Utf8PathBuf;
 use skill_kits::core::{
     agents::{AgentConfig, AgentKind},
-    config::{write_config, Config, RecentProject},
+    config::{read_config, write_config, Config, RecentProject},
     hash::hash_skill_dir,
     ids::{AgentId, SkillId},
     paths::{ensure_app_dirs, AppPaths},
     project::{deploy_project_skill, ProjectDeployRequest},
     registry::{
-        write_deployments_registry, write_skills_registry, DeploymentRecord, DeploymentsRegistry,
-        ManagedSkill, SkillMetadata, SkillSource, SkillsRegistry,
+        read_deployments_registry, read_skills_registry, write_deployments_registry,
+        write_skills_registry, DeploymentRecord, DeploymentsRegistry, ManagedSkill, SkillMetadata,
+        SkillSource, SkillsRegistry,
     },
 };
 use skill_kits::gui::state::{
@@ -268,6 +269,7 @@ fn projects_onboarding_renders_adopt_all_for_discovered_unmanaged_summary() {
         path: project.clone(),
         deployment_count: 0,
         discovered_unmanaged_count: 2,
+        last_adopt_all_result: None,
     });
 
     let renderable = model.renderable_view();
@@ -372,26 +374,243 @@ fn selecting_project_clears_stale_deployment_selection_for_onboarding() {
 }
 
 #[test]
-fn project_adopt_all_placeholder_intent_is_noop_for_controller() {
+fn refresh_project_intent_runs_onboarding_scan_and_updates_discovered_count() {
     let temp_dir = TempDir::new().unwrap();
     let paths = test_paths(&temp_dir);
     let project = project_path(&temp_dir, "sample-app");
     ensure_app_dirs(&paths).unwrap();
-    std::fs::create_dir_all(project.join(".agents/skills/unmanaged")).unwrap();
-    std::fs::write(
-        project.join(".agents/skills/unmanaged/SKILL.md"),
-        "# Unmanaged\n",
-    )
-    .unwrap();
+    write_config(&paths, &Config::default()).unwrap();
+    write_skills_registry(&paths, &SkillsRegistry::default()).unwrap();
+    write_deployments_registry(&paths, &DeploymentsRegistry::default()).unwrap();
+    write_skill(&project.join(".agents/skills/unmanaged"), "# Unmanaged\n");
 
-    let controller = GuiController::new(paths);
-    controller
-        .execute(&GuiActionIntent::ProjectAdoptAll {
+    let mut model = GuiModel::load(&paths).unwrap();
+    model.select_project(project.clone());
+    model.request_refresh_selected_project().unwrap();
+
+    let controller = GuiController::new(paths.clone());
+    assert_eq!(
+        model.execute_next_intent(&controller).unwrap(),
+        Some(GuiActionIntent::RefreshProject {
             project_path: project.clone(),
         })
+    );
+
+    let summary = model
+        .project_summaries
+        .iter()
+        .find(|summary| summary.path == project)
+        .expect("refresh should add a project summary");
+    assert_eq!(summary.discovered_unmanaged_count, 1);
+    assert_eq!(project_actions(&model), vec![ProjectAction::AdoptAll]);
+    assert!(read_config(&paths)
+        .unwrap()
+        .recent_projects
+        .iter()
+        .any(|recent| recent.path == project));
+    assert!(read_skills_registry(&paths).unwrap().skills.is_empty());
+    assert!(read_deployments_registry(&paths)
+        .unwrap()
+        .deployments
+        .is_empty());
+    assert!(project.join(".agents/skills/unmanaged/SKILL.md").exists());
+}
+
+#[test]
+fn project_adopt_all_intent_executes_for_discovered_project_skills() {
+    let temp_dir = TempDir::new().unwrap();
+    let paths = test_paths(&temp_dir);
+    let project = project_path(&temp_dir, "sample-app");
+    ensure_app_dirs(&paths).unwrap();
+    write_config(&paths, &Config::default()).unwrap();
+    write_skills_registry(&paths, &SkillsRegistry::default()).unwrap();
+    write_deployments_registry(&paths, &DeploymentsRegistry::default()).unwrap();
+    write_skill(&project.join(".agents/skills/unmanaged"), "# Unmanaged\n");
+
+    let mut model = GuiModel::load(&paths).unwrap();
+    model.navigate(NavigationView::Projects);
+    model.select_project(project.clone());
+    model.project_summaries.push(ProjectSummary {
+        name: "sample-app".to_string(),
+        path: project.clone(),
+        deployment_count: 0,
+        discovered_unmanaged_count: 1,
+        last_adopt_all_result: None,
+    });
+    model
+        .request_adopt_all_discovered_for_selected_project()
         .unwrap();
 
+    let controller = GuiController::new(paths.clone());
+    assert_eq!(
+        model.execute_next_intent(&controller).unwrap(),
+        Some(GuiActionIntent::ProjectAdoptAll {
+            project_path: project.clone(),
+        })
+    );
+
+    assert_eq!(model.skills.len(), 1);
+    assert_eq!(model.skills[0].name, "unmanaged");
+    assert_eq!(model.deployments.len(), 1);
+    assert_eq!(model.deployments[0].skill_name, "unmanaged");
+    assert_eq!(
+        model
+            .project_summaries
+            .iter()
+            .find(|summary| summary.path == project)
+            .unwrap()
+            .discovered_unmanaged_count,
+        0
+    );
+    let onboarding = model
+        .renderable_view()
+        .inspector_sections
+        .into_iter()
+        .find(|section| section.title == "Onboarding")
+        .expect("missing Onboarding inspector section");
+    assert!(onboarding
+        .lines
+        .contains(&"1 adopted, 0 conflicts".to_string()));
     assert!(project.join(".agents/skills/unmanaged/SKILL.md").exists());
+}
+
+#[test]
+fn project_adopt_all_intent_runs_for_multiple_enabled_agents() {
+    let temp_dir = TempDir::new().unwrap();
+    let paths = test_paths(&temp_dir);
+    let project = project_path(&temp_dir, "sample-app");
+    ensure_app_dirs(&paths).unwrap();
+    write_config(
+        &paths,
+        &Config {
+            agents: vec![
+                AgentConfig {
+                    id: AgentId::new("codex"),
+                    label: "Codex".to_string(),
+                    kind: AgentKind::BuiltIn,
+                    global_skill_dirs: Vec::new(),
+                    project_skill_dirs: vec![".agents/skills".into()],
+                    enabled: true,
+                },
+                AgentConfig {
+                    id: AgentId::new("custom"),
+                    label: "Custom".to_string(),
+                    kind: AgentKind::Custom,
+                    global_skill_dirs: Vec::new(),
+                    project_skill_dirs: vec![".custom/skills".into()],
+                    enabled: true,
+                },
+            ],
+            ..Config::default()
+        },
+    )
+    .unwrap();
+    write_skills_registry(&paths, &SkillsRegistry::default()).unwrap();
+    write_deployments_registry(&paths, &DeploymentsRegistry::default()).unwrap();
+    write_skill(&project.join(".agents/skills/codex-skill"), "# Codex\n");
+    write_skill(&project.join(".custom/skills/custom-skill"), "# Custom\n");
+
+    let mut model = GuiModel::load(&paths).unwrap();
+    model.select_project(project.clone());
+    model.project_summaries.push(ProjectSummary {
+        name: "sample-app".to_string(),
+        path: project.clone(),
+        deployment_count: 0,
+        discovered_unmanaged_count: 2,
+        last_adopt_all_result: None,
+    });
+    model
+        .request_adopt_all_discovered_for_selected_project()
+        .unwrap();
+
+    let controller = GuiController::new(paths);
+    assert!(model.execute_next_intent(&controller).unwrap().is_some());
+
+    assert_eq!(model.skills.len(), 2);
+    assert!(model.skills.iter().any(|skill| skill.name == "codex-skill"));
+    assert!(model
+        .skills
+        .iter()
+        .any(|skill| skill.name == "custom-skill"));
+    assert_eq!(model.deployments.len(), 2);
+    assert!(model
+        .deployments
+        .iter()
+        .any(|deployment| deployment.agent_id == AgentId::new("codex")));
+    assert!(model
+        .deployments
+        .iter()
+        .any(|deployment| deployment.agent_id == AgentId::new("custom")));
+    let summary = model
+        .project_summaries
+        .iter()
+        .find(|summary| summary.path == project)
+        .unwrap();
+    assert_eq!(summary.discovered_unmanaged_count, 0);
+    assert_eq!(summary.last_adopt_all_result.as_ref().unwrap().imported, 2);
+}
+
+#[test]
+fn project_adopt_all_keeps_conflicting_project_skills_discovered() {
+    let temp_dir = TempDir::new().unwrap();
+    let paths = test_paths(&temp_dir);
+    let project = project_path(&temp_dir, "sample-app");
+    ensure_app_dirs(&paths).unwrap();
+    write_config(&paths, &Config::default()).unwrap();
+    let mut managed = managed_skill_with_name(&paths, "conflict");
+    write_skill(&managed.managed_path, "# Managed Conflict\n");
+    managed.content_hash = hash_skill_dir(&managed.managed_path).unwrap();
+    write_skills_registry(
+        &paths,
+        &SkillsRegistry {
+            version: 1,
+            skills: vec![managed],
+        },
+    )
+    .unwrap();
+    write_deployments_registry(&paths, &DeploymentsRegistry::default()).unwrap();
+    write_skill(
+        &project.join(".agents/skills/conflict"),
+        "# Project Conflict\n",
+    );
+
+    let mut model = GuiModel::load(&paths).unwrap();
+    model.navigate(NavigationView::Projects);
+    model.select_project(project.clone());
+    model.project_summaries.push(ProjectSummary {
+        name: "sample-app".to_string(),
+        path: project.clone(),
+        deployment_count: 0,
+        discovered_unmanaged_count: 1,
+        last_adopt_all_result: None,
+    });
+    model
+        .request_adopt_all_discovered_for_selected_project()
+        .unwrap();
+
+    let controller = GuiController::new(paths);
+    assert!(model.execute_next_intent(&controller).unwrap().is_some());
+
+    let summary = model
+        .project_summaries
+        .iter()
+        .find(|summary| summary.path == project)
+        .unwrap();
+    assert_eq!(summary.discovered_unmanaged_count, 1);
+    assert_eq!(summary.last_adopt_all_result.as_ref().unwrap().imported, 0);
+    assert_eq!(summary.last_adopt_all_result.as_ref().unwrap().conflicts, 1);
+    assert_eq!(model.skills.len(), 1);
+    assert!(model.deployments.is_empty());
+    assert_eq!(project_actions(&model), vec![ProjectAction::AdoptAll]);
+    let onboarding = model
+        .renderable_view()
+        .inspector_sections
+        .into_iter()
+        .find(|section| section.title == "Onboarding")
+        .expect("missing Onboarding inspector section");
+    assert!(onboarding
+        .lines
+        .contains(&"0 adopted, 1 conflicts".to_string()));
 }
 
 #[test]

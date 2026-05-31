@@ -96,20 +96,33 @@ fn inspector_sections(model: &GuiModel) -> Vec<InspectorSection> {
 }
 
 fn onboarding_lines(project: &crate::gui::state::ProjectSummary) -> Vec<String> {
+    let mut lines = project
+        .last_adopt_all_result
+        .as_ref()
+        .map(|result| {
+            vec![format!(
+                "{} adopted, {} conflicts",
+                result.imported, result.conflicts
+            )]
+        })
+        .unwrap_or_default();
+
     if project.discovered_unmanaged_count > 0 {
-        return vec![
+        lines.extend([
             format!(
                 "{} discovered project Skill(s) are available to adopt.",
                 project.discovered_unmanaged_count
             ),
             "Adopt all emits a GUI intent; no Skill is adopted automatically.".to_string(),
-        ];
+        ]);
+        return lines;
     }
 
-    vec![
+    lines.extend([
         "No startup project scan has run.".to_string(),
         "Refresh emits an explicit project scan intent.".to_string(),
-    ]
+    ]);
+    lines
 }
 
 fn action_lines(status: &DeploymentStatus) -> Vec<String> {
