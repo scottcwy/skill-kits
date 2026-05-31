@@ -1,0 +1,3 @@
+# Project-native skill deployment
+
+Skill-kits uses project-native physical deployment for v0.1 project-level skill enablement: a Managed Skill is copied into each Agent's project skill directory, scanned under a Project Scope, and enabled or disabled by renaming `SKILL.md` to or from `SKILL.md.disabled`. We rejected the active-directory plus launcher plus isolated-home model because it adds Agent launch integration, session environment handling, and fallback behavior that conflict with the lightweight single-binary goal; project-native deployment is simpler when Agents already support project-local skill directories.
