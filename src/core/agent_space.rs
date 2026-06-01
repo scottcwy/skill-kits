@@ -54,6 +54,13 @@ pub struct SkillInstance {
     pub updated_at: Option<String>,
 }
 
+#[derive(Clone, Debug)]
+pub struct SkillInstanceRequest<'a> {
+    pub app_paths: &'a AppPaths,
+    pub home_dir: &'a Utf8Path,
+    pub instance_id: &'a str,
+}
+
 pub fn scan_agent_spaces(app_paths: &AppPaths, home_dir: &Utf8Path) -> Result<Vec<SkillInstance>> {
     let config = read_config(app_paths)?;
     let skills = read_skills_registry_if_present(app_paths)?.skills;
@@ -154,6 +161,50 @@ pub fn scan_agent_spaces(app_paths: &AppPaths, home_dir: &Utf8Path) -> Result<Ve
             ))
     });
     Ok(instances)
+}
+
+pub fn enable_skill_instance(request: SkillInstanceRequest<'_>) -> Result<SkillInstance> {
+    let instance = find_skill_instance(&request)?;
+    ensure_instance_can_toggle(&instance)?;
+    if instance.disabled_path.exists() {
+        fs::rename(&instance.disabled_path, &instance.enabled_path)?;
+    }
+    find_skill_instance(&request)
+}
+
+pub fn disable_skill_instance(request: SkillInstanceRequest<'_>) -> Result<SkillInstance> {
+    let instance = find_skill_instance(&request)?;
+    ensure_instance_can_toggle(&instance)?;
+    if instance.enabled_path.exists() {
+        fs::rename(&instance.enabled_path, &instance.disabled_path)?;
+    }
+    find_skill_instance(&request)
+}
+
+fn find_skill_instance(request: &SkillInstanceRequest<'_>) -> Result<SkillInstance> {
+    scan_agent_spaces(request.app_paths, request.home_dir)?
+        .into_iter()
+        .find(|instance| instance.id == request.instance_id)
+        .ok_or_else(|| SkillKitsError::SkillNotFound {
+            query: request.instance_id.to_string(),
+        })
+}
+
+fn ensure_instance_can_toggle(instance: &SkillInstance) -> Result<()> {
+    let source_allows_toggle = matches!(
+        instance.source_kind,
+        SkillInstanceSourceKind::AgentSpace | SkillInstanceSourceKind::ProjectDeployment
+    );
+    let valid_toggle = matches!(
+        instance.toggle_state,
+        ToggleState::Enabled | ToggleState::Disabled
+    );
+    if instance.writable && source_allows_toggle && valid_toggle {
+        return Ok(());
+    }
+    Err(SkillKitsError::InvalidToggleState {
+        path: instance.skill_dir.clone(),
+    })
 }
 
 fn scan_immediate_root(

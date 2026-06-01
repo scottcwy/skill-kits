@@ -192,6 +192,96 @@ fn skills_view_renders_agent_space_instances_instead_of_managed_inventory_column
 }
 
 #[test]
+fn skill_instance_actions_toggle_selected_agent_space_file_only() {
+    let temp_dir = TempDir::new().unwrap();
+    let paths = test_paths(&temp_dir);
+    ensure_app_dirs(&paths).unwrap();
+    write_config(&paths, &Config::default()).unwrap();
+    write_skills_registry(&paths, &SkillsRegistry::default()).unwrap();
+    write_deployments_registry(&paths, &DeploymentsRegistry::default()).unwrap();
+    let skill_dir = write_global_codex_skill(&temp_dir, "toggle-me", "# Toggle Me\n");
+    let project = project_path(&temp_dir, "sample-app");
+    std::fs::create_dir_all(project.join(".agents/skills/toggle-me")).unwrap();
+    std::fs::write(
+        project.join(".agents/skills/toggle-me/SKILL.md"),
+        "# Project copy\n",
+    )
+    .unwrap();
+
+    let home = Utf8PathBuf::from_path_buf(temp_dir.path().to_path_buf()).unwrap();
+    let mut model = GuiModel::load_with_home_dir(&paths, home.clone()).unwrap();
+    model.navigate(NavigationView::Skills);
+    let row_id = model.renderable_view().main_rows[0].id.clone();
+    assert!(model.select_render_row(&row_id));
+    assert_eq!(
+        skill_actions(&model),
+        vec![
+            SkillAction::InstallLocal,
+            SkillAction::AdoptAgentSkills,
+            SkillAction::Disable
+        ]
+    );
+    assert_eq!(
+        model.request_disable_selected_skill_instance(),
+        Some(GuiActionIntent::DisableSkillInstance {
+            instance_id: row_id.clone(),
+        })
+    );
+
+    let controller = GuiController::with_home_dir(paths.clone(), home.clone());
+    assert!(model.execute_next_intent(&controller).unwrap().is_some());
+    assert!(skill_dir.join("SKILL.md.disabled").exists());
+    assert!(project.join(".agents/skills/toggle-me/SKILL.md").exists());
+    assert_eq!(model.selected_skill_instance().unwrap().id, row_id);
+    assert_eq!(
+        model.selected_skill_instance().unwrap().toggle_state,
+        ToggleState::Disabled
+    );
+    assert_eq!(
+        skill_actions(&model),
+        vec![
+            SkillAction::InstallLocal,
+            SkillAction::AdoptAgentSkills,
+            SkillAction::Enable
+        ]
+    );
+    assert_eq!(
+        model.request_enable_selected_skill_instance(),
+        Some(GuiActionIntent::EnableSkillInstance {
+            instance_id: row_id.clone(),
+        })
+    );
+    assert!(model.execute_next_intent(&controller).unwrap().is_some());
+    assert!(skill_dir.join("SKILL.md").exists());
+    assert!(!skill_dir.join("SKILL.md.disabled").exists());
+}
+
+#[test]
+fn read_only_skill_instances_do_not_offer_toggle_actions() {
+    let temp_dir = TempDir::new().unwrap();
+    let paths = test_paths(&temp_dir);
+    let home = Utf8PathBuf::from_path_buf(temp_dir.path().to_path_buf()).unwrap();
+    ensure_app_dirs(&paths).unwrap();
+    write_config(&paths, &Config::default()).unwrap();
+    write_skills_registry(&paths, &SkillsRegistry::default()).unwrap();
+    write_deployments_registry(&paths, &DeploymentsRegistry::default()).unwrap();
+    let skill_dir = home.join(".codex/plugins/cache/openai/browser/skills/browser-skill");
+    write_skill(&skill_dir, "# Browser Skill\n");
+
+    let mut model = GuiModel::load_with_home_dir(&paths, home).unwrap();
+    model.navigate(NavigationView::Skills);
+    let row_id = model.renderable_view().main_rows[0].id.clone();
+    assert!(model.select_render_row(&row_id));
+
+    assert_eq!(
+        skill_actions(&model),
+        vec![SkillAction::InstallLocal, SkillAction::AdoptAgentSkills]
+    );
+    assert_eq!(model.request_disable_selected_skill_instance(), None);
+    assert_eq!(model.request_enable_selected_skill_instance(), None);
+}
+
+#[test]
 fn each_navigation_view_loads_from_app_paths_model() {
     let temp_dir = TempDir::new().unwrap();
     let paths = test_paths(&temp_dir);

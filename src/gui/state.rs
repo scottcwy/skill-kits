@@ -3,7 +3,10 @@ use crate::core::{
         global_agent_adopt_resilient, project_adopt, project_adopt_all,
         project_adopt_conflict_as_new, GlobalAgentAdoptRequest, ProjectAdoptRequest,
     },
-    agent_space::{scan_agent_spaces, SkillInstance},
+    agent_space::{
+        disable_skill_instance, enable_skill_instance, scan_agent_spaces, SkillInstance,
+        SkillInstanceRequest,
+    },
     agents::{
         add_custom_agent_config, remove_custom_agent_config, reset_agent_project_skill_dirs,
         update_agent_project_skill_dirs, AgentConfig, AgentKind,
@@ -91,6 +94,12 @@ pub enum GuiActionIntent {
         project_path: Utf8PathBuf,
         agent_id: AgentId,
         skill_name: String,
+    },
+    EnableSkillInstance {
+        instance_id: String,
+    },
+    DisableSkillInstance {
+        instance_id: String,
     },
     RemoveDeployment {
         project_path: Utf8PathBuf,
@@ -387,6 +396,24 @@ impl GuiController {
                     project_path,
                     agent_id,
                     skill_query: skill_name,
+                })?;
+                GuiControllerOutcome::None
+            }
+            GuiActionIntent::EnableSkillInstance { instance_id } => {
+                let home = self.home_dir.clone().map_or_else(default_home_dir, Ok)?;
+                enable_skill_instance(SkillInstanceRequest {
+                    app_paths: &self.paths,
+                    home_dir: &home,
+                    instance_id,
+                })?;
+                GuiControllerOutcome::None
+            }
+            GuiActionIntent::DisableSkillInstance { instance_id } => {
+                let home = self.home_dir.clone().map_or_else(default_home_dir, Ok)?;
+                disable_skill_instance(SkillInstanceRequest {
+                    app_paths: &self.paths,
+                    home_dir: &home,
+                    instance_id,
                 })?;
                 GuiControllerOutcome::None
             }
@@ -1334,6 +1361,26 @@ impl GuiModel {
         })
     }
 
+    pub fn request_enable_selected_skill_instance(&mut self) -> Option<GuiActionIntent> {
+        let instance = self.selected_skill_instance()?.clone();
+        if !instance.writable || instance.toggle_state != ToggleState::Disabled {
+            return None;
+        }
+        self.push_intent(GuiActionIntent::EnableSkillInstance {
+            instance_id: instance.id,
+        })
+    }
+
+    pub fn request_disable_selected_skill_instance(&mut self) -> Option<GuiActionIntent> {
+        let instance = self.selected_skill_instance()?.clone();
+        if !instance.writable || instance.toggle_state != ToggleState::Enabled {
+            return None;
+        }
+        self.push_intent(GuiActionIntent::DisableSkillInstance {
+            instance_id: instance.id,
+        })
+    }
+
     pub fn request_remove_selected_deployment(&mut self, force: bool) -> Option<GuiActionIntent> {
         if !force {
             let status = self.selected_deployment_status()?;
@@ -1634,6 +1681,24 @@ impl GuiModel {
                 self.agent_label(agent_id),
                 project_label(project_path)
             ),
+            GuiActionIntent::EnableSkillInstance { instance_id } => {
+                let skill_name = self
+                    .skill_instances
+                    .iter()
+                    .find(|instance| instance.id == *instance_id)
+                    .map(|instance| instance.name.as_str())
+                    .unwrap_or(instance_id);
+                format!("Enabled {skill_name} in Agent Space.")
+            }
+            GuiActionIntent::DisableSkillInstance { instance_id } => {
+                let skill_name = self
+                    .skill_instances
+                    .iter()
+                    .find(|instance| instance.id == *instance_id)
+                    .map(|instance| instance.name.as_str())
+                    .unwrap_or(instance_id);
+                format!("Disabled {skill_name} in Agent Space.")
+            }
             GuiActionIntent::RemoveDeployment {
                 project_path,
                 agent_id,
@@ -2013,6 +2078,8 @@ fn action_label(intent: &GuiActionIntent) -> &'static str {
         GuiActionIntent::DeploySkill { .. } => "Deploy",
         GuiActionIntent::EnableDeployment { .. } => "Enable",
         GuiActionIntent::DisableDeployment { .. } => "Disable",
+        GuiActionIntent::EnableSkillInstance { .. } => "Enable",
+        GuiActionIntent::DisableSkillInstance { .. } => "Disable",
         GuiActionIntent::RemoveDeployment { .. } => "Remove",
         GuiActionIntent::RedeployDeployment { .. } => "Redeploy",
         GuiActionIntent::RefreshProject { .. } => "Refresh",

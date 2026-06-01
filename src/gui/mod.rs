@@ -5,6 +5,7 @@ pub mod skills;
 pub mod state;
 
 use crate::core::paths::AppPaths;
+use crate::core::ToggleState;
 use eframe::egui;
 use state::{
     AgentEditorMode, GuiController, GuiModel, GuiScope, GuiStatusKind, NavigationView,
@@ -18,6 +19,8 @@ use std::thread;
 pub enum SkillAction {
     InstallLocal,
     AdoptAgentSkills,
+    Enable,
+    Disable,
     Scan,
     Deploy,
     Uninstall,
@@ -100,6 +103,8 @@ impl SkillAction {
         match self {
             Self::InstallLocal => "Install local",
             Self::AdoptAgentSkills => "Adopt Agent Skills",
+            Self::Enable => "Enable",
+            Self::Disable => "Disable",
             Self::Scan => "Scan",
             Self::Deploy => "Deploy",
             Self::Uninstall => "Uninstall",
@@ -119,6 +124,15 @@ pub fn skill_actions(model: &GuiModel) -> Vec<SkillAction> {
             actions.push(SkillAction::Deploy);
         }
         actions.push(SkillAction::Uninstall);
+    }
+    if let Some(instance) = model.selected_skill_instance() {
+        if instance.writable {
+            match instance.toggle_state {
+                ToggleState::Enabled => actions.push(SkillAction::Disable),
+                ToggleState::Disabled => actions.push(SkillAction::Enable),
+                ToggleState::InvalidBothPresent | ToggleState::InvalidBothMissing => {}
+            }
+        }
     }
     actions
 }
@@ -592,6 +606,12 @@ fn render_skill_action_button(
         }
         SkillAction::AdoptAgentSkills => {
             let _ = model.request_adopt_all_agent_skills();
+        }
+        SkillAction::Enable => {
+            let _ = model.request_enable_selected_skill_instance();
+        }
+        SkillAction::Disable => {
+            let _ = model.request_disable_selected_skill_instance();
         }
         SkillAction::Scan => {
             let _ = model.request_scan_selected_skill();
