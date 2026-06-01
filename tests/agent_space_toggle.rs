@@ -183,6 +183,44 @@ fn toggle_does_not_mutate_managed_inventory_or_same_name_project_copy() {
 }
 
 #[test]
+fn project_deployment_instance_toggle_renames_only_that_project_copy() {
+    let temp_dir = TempDir::new().unwrap();
+    let paths = test_paths(&temp_dir);
+    let home = home_path(&temp_dir);
+    let project = Utf8PathBuf::from_path_buf(temp_dir.path().join("sample-app")).unwrap();
+    ensure_app_dirs(&paths).unwrap();
+    std::fs::create_dir_all(&project).unwrap();
+    write_config_for_codex(
+        &paths,
+        vec![RecentProject {
+            name: "sample-app".to_string(),
+            path: project.clone(),
+            last_opened_at: "2026-06-01T00:00:00Z".to_string(),
+        }],
+        vec!["~/.codex/skills".into()],
+    );
+    let global_skill = home.join(".codex/skills/project-toggle");
+    write_skill_file(&global_skill, "SKILL.md", "# Global copy\n");
+    let project_skill = project.join(".agents/skills/project-toggle");
+    write_skill_file(&project_skill, "SKILL.md", "# Project copy\n");
+    let instance_id = instance_id_for(&paths, &home, &project_skill);
+
+    let disabled = disable_skill_instance(request(&paths, &home, &instance_id)).unwrap();
+
+    assert_eq!(disabled.toggle_state, ToggleState::Disabled);
+    assert!(project_skill.join("SKILL.md.disabled").exists());
+    assert!(!project_skill.join("SKILL.md").exists());
+    assert!(global_skill.join("SKILL.md").exists());
+    assert!(!global_skill.join("SKILL.md.disabled").exists());
+
+    let enabled = enable_skill_instance(request(&paths, &home, &instance_id)).unwrap();
+
+    assert_eq!(enabled.toggle_state, ToggleState::Enabled);
+    assert!(project_skill.join("SKILL.md").exists());
+    assert!(!project_skill.join("SKILL.md.disabled").exists());
+}
+
+#[test]
 fn toggle_blocks_plugin_vendor_invalid_and_missing_instances() {
     let temp_dir = TempDir::new().unwrap();
     let paths = test_paths(&temp_dir);

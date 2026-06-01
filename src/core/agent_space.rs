@@ -460,7 +460,7 @@ fn source_kind_for_root(root: &Utf8Path) -> SkillInstanceSourceKind {
             source_kind = SkillInstanceSourceKind::PluginCache;
             break;
         }
-        if component == "vendor_imports" {
+        if previous == ".codex" && component == "vendor_imports" {
             source_kind = SkillInstanceSourceKind::Vendor;
             break;
         }

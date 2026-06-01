@@ -323,6 +323,42 @@ fn plugin_cache_classification_uses_exact_path_components() {
 }
 
 #[test]
+fn vendor_classification_uses_codex_vendor_imports_component() {
+    let temp_dir = TempDir::new().unwrap();
+    let paths = test_paths(&temp_dir);
+    let home = home_path(&temp_dir);
+    let similar_root = home.join("custom-agent/vendor_imports/skills");
+    ensure_app_dirs(&paths).unwrap();
+    write_config(
+        &paths,
+        &Config {
+            agents: vec![AgentConfig {
+                id: AgentId::new("custom"),
+                label: "Custom".to_string(),
+                kind: AgentKind::Custom,
+                global_skill_dirs: vec![similar_root.clone()],
+                project_skill_dirs: vec![".custom/skills".into()],
+                enabled: true,
+            }],
+            recent_projects: Vec::new(),
+            ..Config::default()
+        },
+    )
+    .unwrap();
+    let skill_dir = similar_root.join("normal-skill");
+    write_skill_file(&skill_dir, "SKILL.md", "# Normal Skill\n");
+
+    let instance = scan_agent_spaces(&paths, &home)
+        .unwrap()
+        .into_iter()
+        .find(|instance| instance.skill_dir == skill_dir)
+        .expect("normal instance");
+
+    assert_eq!(instance.source_kind, SkillInstanceSourceKind::AgentSpace);
+    assert!(instance.writable);
+}
+
+#[test]
 fn recent_projects_are_scanned_as_project_deployments() {
     let temp_dir = TempDir::new().unwrap();
     let paths = test_paths(&temp_dir);
