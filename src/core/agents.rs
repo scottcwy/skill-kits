@@ -1,10 +1,10 @@
 use crate::core::{
-    config::read_config,
+    config::{read_config, update_config},
     error::{Result, SkillKitsError},
     ids::AgentId,
     paths::AppPaths,
 };
-use camino::Utf8PathBuf;
+use camino::{Utf8Component, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -147,4 +147,118 @@ pub fn configured_project_skill_dirs_for(
 
 pub fn global_skill_dirs_for(agent_id: &AgentId) -> Option<Vec<Utf8PathBuf>> {
     built_in_agent_config(agent_id).map(|agent| agent.global_skill_dirs)
+}
+
+pub fn add_custom_agent_config(
+    paths: &AppPaths,
+    id: AgentId,
+    label: String,
+    project_skill_dir: Utf8PathBuf,
+) -> Result<AgentConfig> {
+    let id = validated_agent_id(id)?;
+    let label = validated_agent_label(label)?;
+    validate_project_skill_dir(&project_skill_dir)?;
+
+    update_config(paths, |config| {
+        if config.agents.iter().any(|agent| agent.id == id) {
+            return Err(SkillKitsError::AgentAlreadyConfigured {
+                agent_id: id.clone(),
+            });
+        }
+
+        let agent = AgentConfig {
+            id,
+            label,
+            kind: AgentKind::Custom,
+            global_skill_dirs: Vec::new(),
+            project_skill_dirs: vec![project_skill_dir],
+            enabled: true,
+        };
+        config.agents.push(agent.clone());
+        Ok(agent)
+    })
+}
+
+pub fn update_agent_project_skill_dirs(
+    paths: &AppPaths,
+    agent_id: &AgentId,
+    project_skill_dirs: Vec<Utf8PathBuf>,
+) -> Result<AgentConfig> {
+    validate_project_skill_dirs(&project_skill_dirs)?;
+
+    update_config(paths, |config| {
+        let agent = config
+            .agents
+            .iter_mut()
+            .find(|agent| agent.id == *agent_id)
+            .ok_or_else(|| SkillKitsError::AgentNotFound {
+                agent_id: agent_id.clone(),
+            })?;
+
+        agent.project_skill_dirs = project_skill_dirs;
+        Ok(agent.clone())
+    })
+}
+
+fn validated_agent_id(id: AgentId) -> Result<AgentId> {
+    let value = id.as_str().trim();
+    if value.is_empty() {
+        return Err(SkillKitsError::InvalidAgentConfig {
+            reason: "agent id cannot be empty".to_string(),
+        });
+    }
+    Ok(AgentId::new(value))
+}
+
+fn validated_agent_label(label: String) -> Result<String> {
+    let label = label.trim();
+    if label.is_empty() {
+        return Err(SkillKitsError::InvalidAgentConfig {
+            reason: "agent label cannot be empty".to_string(),
+        });
+    }
+    Ok(label.to_string())
+}
+
+fn validate_project_skill_dirs(project_skill_dirs: &[Utf8PathBuf]) -> Result<()> {
+    if project_skill_dirs.is_empty() {
+        return Err(SkillKitsError::InvalidSkillDir {
+            path: Utf8PathBuf::new(),
+            reason: "at least one project Skill directory is required".to_string(),
+        });
+    }
+
+    for dir in project_skill_dirs {
+        validate_project_skill_dir(dir)?;
+    }
+
+    Ok(())
+}
+
+fn validate_project_skill_dir(project_skill_dir: &Utf8PathBuf) -> Result<()> {
+    if project_skill_dir.as_str().trim().is_empty() {
+        return Err(SkillKitsError::InvalidSkillDir {
+            path: project_skill_dir.clone(),
+            reason: "project Skill directory cannot be empty".to_string(),
+        });
+    }
+
+    if project_skill_dir.is_absolute() {
+        return Err(SkillKitsError::InvalidSkillDir {
+            path: project_skill_dir.clone(),
+            reason: "project Skill directory must be relative".to_string(),
+        });
+    }
+
+    if project_skill_dir
+        .components()
+        .any(|component| matches!(component, Utf8Component::ParentDir))
+    {
+        return Err(SkillKitsError::InvalidSkillDir {
+            path: project_skill_dir.clone(),
+            reason: "project Skill directory cannot contain parent traversal".to_string(),
+        });
+    }
+
+    Ok(())
 }

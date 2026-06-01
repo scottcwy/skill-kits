@@ -7,8 +7,8 @@ pub mod state;
 use crate::core::paths::AppPaths;
 use eframe::egui;
 use state::{
-    GuiController, GuiModel, GuiScope, GuiStatusKind, NavigationView, RenderableView, UiColors,
-    DRIFT_REMOVE_CONFIRMATION_MESSAGE,
+    AgentEditorMode, GuiController, GuiModel, GuiScope, GuiStatusKind, NavigationView,
+    RenderableView, UiColors, DRIFT_REMOVE_CONFIRMATION_MESSAGE,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -437,11 +437,7 @@ fn render_action_controls(ui: &mut egui::Ui, model: &mut GuiModel, colors: UiCol
             }
         }
         NavigationView::Agents => {
-            ui.horizontal(|ui| {
-                for action in agent_actions(model) {
-                    render_agent_action_button(ui, model, action);
-                }
-            });
+            render_agent_editor_controls(ui, model, colors);
         }
         NavigationView::Dashboard => {}
     }
@@ -485,12 +481,48 @@ fn render_agent_action_button(ui: &mut egui::Ui, model: &mut GuiModel, action: A
 
     match action {
         AgentAction::EditSelected => {
-            let _ = model.request_edit_selected_agent();
+            let _ = model.begin_edit_selected_agent_path();
         }
         AgentAction::AddCustom => {
-            let _ = model.request_add_custom_agent();
+            model.begin_add_custom_agent();
         }
     }
+}
+
+fn render_agent_editor_controls(ui: &mut egui::Ui, model: &mut GuiModel, colors: UiColors) {
+    if let Some(draft) = model.agent_editor_draft().cloned() {
+        let mut id_text = draft.id_text;
+        let mut label_text = draft.label_text;
+        let mut project_dir_text = draft.project_dir_text;
+        let is_add = matches!(draft.mode, AgentEditorMode::AddCustom);
+
+        if is_add {
+            ui.label(egui::RichText::new("Agent id").color(colors.ink_subtle));
+            ui.text_edit_singleline(&mut id_text);
+            ui.label(egui::RichText::new("Label").color(colors.ink_subtle));
+            ui.text_edit_singleline(&mut label_text);
+        }
+        ui.label(egui::RichText::new("Project Skill dir").color(colors.ink_subtle));
+        ui.text_edit_singleline(&mut project_dir_text);
+        model.update_agent_editor_identity(id_text, label_text);
+        model.update_agent_editor_project_dir(project_dir_text);
+
+        ui.horizontal(|ui| {
+            if ui.button("Save").clicked() {
+                let _ = model.request_save_agent_editor();
+            }
+            if ui.button("Cancel").clicked() {
+                model.cancel_agent_editor();
+            }
+        });
+        return;
+    }
+
+    ui.horizontal(|ui| {
+        for action in agent_actions(model) {
+            render_agent_action_button(ui, model, action);
+        }
+    });
 }
 
 fn render_project_action_button(

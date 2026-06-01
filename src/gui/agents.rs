@@ -60,6 +60,27 @@ pub fn renderable(model: &GuiModel) -> RenderableView {
 }
 
 fn inspector_sections(model: &GuiModel) -> Vec<InspectorSection> {
+    if let Some(draft) = model.agent_editor_draft() {
+        return vec![
+            InspectorSection {
+                title: "Editing".to_string(),
+                lines: vec![
+                    draft.label_text.clone(),
+                    format!("Agent id {}", draft.id_text),
+                    format!("Project dir {}", draft.project_dir_text),
+                ],
+            },
+            InspectorSection {
+                title: "Actions".to_string(),
+                lines: vec![
+                    "Save writes the Agent project directory to local Skill-kits config."
+                        .to_string(),
+                    "Project directories must be relative paths.".to_string(),
+                ],
+            },
+        ];
+    }
+
     let agent = model.selected_agent().or_else(|| model.agents.first());
     match agent {
         Some(agent) => vec![
@@ -82,7 +103,8 @@ fn inspector_sections(model: &GuiModel) -> Vec<InspectorSection> {
             InspectorSection {
                 title: "Actions".to_string(),
                 lines: vec![
-                    "Edit path is planned for v0.1 GUI configuration polish.".to_string(),
+                    "Edit path updates this Agent project Skill directory.".to_string(),
+                    "Add custom creates a local config entry for another Agent.".to_string(),
                     "No global Agent sync settings in v0.1.".to_string(),
                 ],
             },

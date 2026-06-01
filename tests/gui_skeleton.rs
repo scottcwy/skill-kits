@@ -633,12 +633,18 @@ fn stale_scan_report_is_invalidated_when_skill_hash_changes_after_reload() {
         "No findings"
     );
 
-    model.request_add_custom_agent().unwrap();
+    model.request_scan_selected_skill().unwrap();
     assert!(model.execute_next_intent(&controller).unwrap().is_some());
 
-    assert!(model.skill_risk_report(&changed_skill.id).is_none());
+    assert_ne!(
+        model
+            .skill_risk_report(&changed_skill.id)
+            .unwrap()
+            .scanned_hash,
+        skill.content_hash
+    );
     let renderable = model.renderable_view();
-    assert_eq!(renderable.main_rows[0].cells[2], "Not scanned");
+    assert_ne!(renderable.main_rows[0].cells[2], "Not scanned");
 }
 
 #[test]
@@ -1539,51 +1545,128 @@ fn actions_emit_intents_without_direct_filesystem_mutation() {
 }
 
 #[test]
-fn agent_actions_emit_intents_without_direct_filesystem_mutation() {
+fn add_custom_agent_editor_save_persists_config_and_reloads_model() {
     let temp_dir = TempDir::new().unwrap();
     let paths = test_paths(&temp_dir);
     ensure_app_dirs(&paths).unwrap();
-
-    let custom_agent = AgentConfig {
-        id: AgentId::new("custom"),
-        label: "Custom".to_string(),
-        kind: AgentKind::Custom,
-        global_skill_dirs: Vec::new(),
-        project_skill_dirs: vec![".custom/skills".into()],
-        enabled: true,
-    };
-    write_config(
-        &paths,
-        &Config {
-            agents: vec![custom_agent],
-            ..Config::default()
-        },
-    )
-    .unwrap();
+    write_config(&paths, &Config::default()).unwrap();
     write_skills_registry(&paths, &SkillsRegistry::default()).unwrap();
     write_deployments_registry(&paths, &DeploymentsRegistry::default()).unwrap();
 
-    let config_before = std::fs::read_to_string(&paths.config_file).unwrap();
     let mut model = GuiModel::load(&paths).unwrap();
-    model.select_agent(AgentId::new("custom"));
 
-    let edit_intent = model.request_edit_selected_agent().unwrap();
+    model.begin_add_custom_agent();
+    model.update_agent_editor_identity("zed".to_string(), "Zed".to_string());
+    model.update_agent_editor_project_dir(".zed/skills".to_string());
+    let intent = model.request_save_agent_editor().unwrap();
     assert_eq!(
-        edit_intent,
-        GuiActionIntent::EditAgent {
-            agent_id: AgentId::new("custom"),
+        intent,
+        GuiActionIntent::AddCustomAgent {
+            agent_id: AgentId::new("zed"),
+            label: "Zed".to_string(),
+            project_skill_dir: ".zed/skills".into(),
         }
     );
-    let add_intent = model.request_add_custom_agent().unwrap();
-    assert_eq!(add_intent, GuiActionIntent::AddCustomAgent);
+    assert_eq!(model.pending_intents().len(), 1);
 
     let controller = GuiController::new(paths.clone());
-    controller.execute(&edit_intent).unwrap();
-    controller.execute(&add_intent).unwrap();
+    assert!(model.execute_next_intent(&controller).unwrap().is_some());
+
+    assert!(model.agent_editor_draft().is_none());
+    assert_eq!(model.selected_agent().unwrap().id, AgentId::new("zed"));
+    assert!(model
+        .agents
+        .iter()
+        .any(|agent| agent.id == AgentId::new("zed")
+            && agent.label == "Zed"
+            && agent.kind == AgentKind::Custom
+            && agent.project_skill_dirs == vec![Utf8PathBuf::from(".zed/skills")]));
+    assert!(read_config(&paths)
+        .unwrap()
+        .agents
+        .iter()
+        .any(|agent| agent.id == AgentId::new("zed")));
     assert_eq!(
-        std::fs::read_to_string(&paths.config_file).unwrap(),
-        config_before
+        model.last_status().unwrap().message,
+        "Added custom Agent Zed."
     );
+}
+
+#[test]
+fn edit_agent_editor_save_updates_project_dirs() {
+    let temp_dir = TempDir::new().unwrap();
+    let paths = test_paths(&temp_dir);
+    ensure_app_dirs(&paths).unwrap();
+    write_config(&paths, &Config::default()).unwrap();
+    write_skills_registry(&paths, &SkillsRegistry::default()).unwrap();
+    write_deployments_registry(&paths, &DeploymentsRegistry::default()).unwrap();
+
+    let mut model = GuiModel::load(&paths).unwrap();
+    model.select_agent(AgentId::new("codex"));
+
+    model.begin_edit_selected_agent_path().unwrap();
+    assert_eq!(
+        model.agent_editor_draft().unwrap().project_dir_text,
+        ".agents/skills"
+    );
+    model.update_agent_editor_project_dir(".codex/project-skills".to_string());
+    let intent = model.request_save_agent_editor().unwrap();
+    assert_eq!(
+        intent,
+        GuiActionIntent::UpdateAgentProjectSkillDirs {
+            agent_id: AgentId::new("codex"),
+            project_skill_dirs: vec![".codex/project-skills".into()],
+        }
+    );
+
+    let controller = GuiController::new(paths.clone());
+    assert!(model.execute_next_intent(&controller).unwrap().is_some());
+
+    assert_eq!(model.selected_agent().unwrap().id, AgentId::new("codex"));
+    assert_eq!(
+        model.selected_agent().unwrap().project_skill_dirs,
+        vec![Utf8PathBuf::from(".codex/project-skills")]
+    );
+    assert_eq!(
+        read_config(&paths).unwrap().agents[0].project_skill_dirs,
+        vec![Utf8PathBuf::from(".codex/project-skills")]
+    );
+    assert_eq!(
+        model.last_status().unwrap().message,
+        "Updated Codex project Skill directories."
+    );
+}
+
+#[test]
+fn invalid_agent_editor_save_reports_error_and_preserves_config() {
+    let temp_dir = TempDir::new().unwrap();
+    let paths = test_paths(&temp_dir);
+    ensure_app_dirs(&paths).unwrap();
+    let config = Config::default();
+    write_config(&paths, &config).unwrap();
+    write_skills_registry(&paths, &SkillsRegistry::default()).unwrap();
+    write_deployments_registry(&paths, &DeploymentsRegistry::default()).unwrap();
+
+    let mut model = GuiModel::load(&paths).unwrap();
+    model.select_agent(AgentId::new("codex"));
+    model.begin_edit_selected_agent_path().unwrap();
+    model.update_agent_editor_project_dir("/tmp/absolute".to_string());
+    model.request_save_agent_editor().unwrap();
+
+    let controller = GuiController::new(paths.clone());
+    let err = model.execute_next_intent(&controller).unwrap_err();
+
+    assert!(matches!(
+        err,
+        skill_kits::core::error::SkillKitsError::InvalidSkillDir { .. }
+    ));
+    assert_eq!(read_config(&paths).unwrap(), config);
+    assert_eq!(model.last_status().unwrap().kind, GuiStatusKind::Error);
+    assert!(model
+        .last_status()
+        .unwrap()
+        .message
+        .contains("Update Agent failed"));
 }
 
 #[test]

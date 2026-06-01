@@ -1,6 +1,6 @@
 use crate::core::{
     adopt::{project_adopt_all, project_adopt_conflict_as_new, ProjectAdoptRequest},
-    agents::AgentConfig,
+    agents::{add_custom_agent_config, update_agent_project_skill_dirs, AgentConfig},
     config::{read_config, RecentProject},
     ids::{AgentId, SkillId},
     install::{uninstall_skill, UninstallSkillRequest},
@@ -101,10 +101,15 @@ pub enum GuiActionIntent {
     OpenProject {
         project_path: Utf8PathBuf,
     },
-    EditAgent {
+    UpdateAgentProjectSkillDirs {
         agent_id: AgentId,
+        project_skill_dirs: Vec<Utf8PathBuf>,
     },
-    AddCustomAgent,
+    AddCustomAgent {
+        agent_id: AgentId,
+        label: String,
+        project_skill_dir: Utf8PathBuf,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -343,9 +348,27 @@ impl GuiController {
                     preserve_existing_conflicts: false,
                 }
             }
-            GuiActionIntent::OpenProject { .. }
-            | GuiActionIntent::EditAgent { .. }
-            | GuiActionIntent::AddCustomAgent => GuiControllerOutcome::None,
+            GuiActionIntent::OpenProject { .. } => GuiControllerOutcome::None,
+            GuiActionIntent::UpdateAgentProjectSkillDirs {
+                agent_id,
+                project_skill_dirs,
+            } => {
+                update_agent_project_skill_dirs(&self.paths, agent_id, project_skill_dirs.clone())?;
+                GuiControllerOutcome::None
+            }
+            GuiActionIntent::AddCustomAgent {
+                agent_id,
+                label,
+                project_skill_dir,
+            } => {
+                add_custom_agent_config(
+                    &self.paths,
+                    agent_id.clone(),
+                    label.clone(),
+                    project_skill_dir.clone(),
+                )?;
+                GuiControllerOutcome::None
+            }
         };
         Ok(outcome)
     }
@@ -449,6 +472,20 @@ impl GuiRiskReport {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AgentEditorMode {
+    AddCustom,
+    EditPath { agent_id: AgentId },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AgentEditorDraft {
+    pub mode: AgentEditorMode,
+    pub id_text: String,
+    pub label_text: String,
+    pub project_dir_text: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProjectDeployTarget {
     pub project_path: Utf8PathBuf,
     pub skill_id: SkillId,
@@ -477,6 +514,7 @@ pub struct GuiModel {
     pending_intents: Vec<GuiActionIntent>,
     last_status: Option<GuiStatus>,
     skill_risk_reports: Vec<(SkillId, GuiRiskReport)>,
+    agent_editor_draft: Option<AgentEditorDraft>,
 }
 
 impl GuiModel {
@@ -544,6 +582,7 @@ impl GuiModel {
             pending_intents: Vec::new(),
             last_status: None,
             skill_risk_reports: Vec::new(),
+            agent_editor_draft: None,
         })
     }
 
@@ -773,13 +812,67 @@ impl GuiModel {
         Some(())
     }
 
-    pub fn request_edit_selected_agent(&mut self) -> Option<GuiActionIntent> {
-        let agent_id = self.selected_agent.clone()?;
-        self.push_intent(GuiActionIntent::EditAgent { agent_id })
+    pub fn begin_edit_selected_agent_path(&mut self) -> Option<()> {
+        let agent = self.selected_agent()?.clone();
+        self.agent_editor_draft = Some(AgentEditorDraft {
+            mode: AgentEditorMode::EditPath {
+                agent_id: agent.id.clone(),
+            },
+            id_text: agent.id.to_string(),
+            label_text: agent.label,
+            project_dir_text: agent
+                .project_skill_dirs
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", "),
+        });
+        Some(())
     }
 
-    pub fn request_add_custom_agent(&mut self) -> Option<GuiActionIntent> {
-        self.push_intent(GuiActionIntent::AddCustomAgent)
+    pub fn begin_add_custom_agent(&mut self) {
+        self.agent_editor_draft = Some(AgentEditorDraft {
+            mode: AgentEditorMode::AddCustom,
+            id_text: "custom".to_string(),
+            label_text: "Custom Agent".to_string(),
+            project_dir_text: ".custom/skills".to_string(),
+        });
+    }
+
+    pub fn update_agent_editor_identity(&mut self, id: String, label: String) {
+        if let Some(draft) = &mut self.agent_editor_draft {
+            draft.id_text = id;
+            draft.label_text = label;
+        }
+    }
+
+    pub fn update_agent_editor_project_dir(&mut self, value: String) {
+        if let Some(draft) = &mut self.agent_editor_draft {
+            draft.project_dir_text = value;
+        }
+    }
+
+    pub fn request_save_agent_editor(&mut self) -> Option<GuiActionIntent> {
+        let draft = self.agent_editor_draft.clone()?;
+        let project_skill_dirs = parse_project_dir_text(&draft.project_dir_text);
+        let intent = match draft.mode {
+            AgentEditorMode::AddCustom => GuiActionIntent::AddCustomAgent {
+                agent_id: AgentId::new(draft.id_text.trim()),
+                label: draft.label_text.trim().to_string(),
+                project_skill_dir: project_skill_dirs.into_iter().next()?,
+            },
+            AgentEditorMode::EditPath { agent_id } => {
+                GuiActionIntent::UpdateAgentProjectSkillDirs {
+                    agent_id,
+                    project_skill_dirs,
+                }
+            }
+        };
+        self.push_intent(intent)
+    }
+
+    pub fn cancel_agent_editor(&mut self) {
+        self.agent_editor_draft = None;
     }
 
     pub fn request_enable_selected_deployment(&mut self) -> Option<GuiActionIntent> {
@@ -868,6 +961,13 @@ impl GuiModel {
         let pending_remove_confirmation = self.pending_remove_confirmation.clone();
         let pending_intents = self.pending_intents.clone();
         let skill_risk_reports = self.skill_risk_reports.clone();
+        let selected_agent_after_save = match &intent {
+            GuiActionIntent::AddCustomAgent { agent_id, .. }
+            | GuiActionIntent::UpdateAgentProjectSkillDirs { agent_id, .. } => {
+                Some(agent_id.clone())
+            }
+            _ => None,
+        };
         let project_conflict_state = self
             .project_summaries
             .iter()
@@ -908,11 +1008,13 @@ impl GuiModel {
                 .iter()
                 .any(|skill| skill.id.as_str() == selected.as_str())
         });
-        self.selected_agent = selected_agent.filter(|selected| {
-            self.agents
-                .iter()
-                .any(|agent| agent.id.as_str() == selected.as_str())
-        });
+        self.selected_agent = selected_agent_after_save
+            .or(selected_agent)
+            .filter(|selected| {
+                self.agents
+                    .iter()
+                    .any(|agent| agent.id.as_str() == selected.as_str())
+            });
         self.selected_project = selected_project.or_else(|| match &self.active_scope {
             GuiScope::GlobalInventory => None,
             GuiScope::Project(path) => Some(path.clone()),
@@ -936,6 +1038,7 @@ impl GuiModel {
                     .any(|skill| skill.id == *skill_id && skill.content_hash == report.scanned_hash)
             })
             .collect();
+        self.agent_editor_draft = None;
         self.last_status = Some(GuiStatus {
             kind: GuiStatusKind::Success,
             message: success_message,
@@ -1061,10 +1164,15 @@ impl GuiModel {
             GuiActionIntent::OpenProject { project_path } => {
                 format!("Selected {}.", project_label(project_path))
             }
-            GuiActionIntent::EditAgent { agent_id } => {
-                format!("Opened {} agent settings.", self.agent_label(agent_id))
+            GuiActionIntent::UpdateAgentProjectSkillDirs { agent_id, .. } => {
+                format!(
+                    "Updated {} project Skill directories.",
+                    self.agent_label(agent_id)
+                )
             }
-            GuiActionIntent::AddCustomAgent => "Opened custom Agent setup.".to_string(),
+            GuiActionIntent::AddCustomAgent { label, .. } => {
+                format!("Added custom Agent {label}.")
+            }
         }
     }
 
@@ -1202,6 +1310,10 @@ impl GuiModel {
         })
     }
 
+    pub fn agent_editor_draft(&self) -> Option<&AgentEditorDraft> {
+        self.agent_editor_draft.as_ref()
+    }
+
     pub fn selected_project_summary(&self) -> Option<&ProjectSummary> {
         self.selected_project.as_ref().and_then(|selected| {
             self.project_summaries
@@ -1265,6 +1377,7 @@ impl Default for GuiModel {
             pending_intents: Vec::new(),
             last_status: None,
             skill_risk_reports: Vec::new(),
+            agent_editor_draft: None,
         }
     }
 }
@@ -1282,9 +1395,18 @@ fn action_label(intent: &GuiActionIntent) -> &'static str {
         GuiActionIntent::ProjectAdoptAll { .. } => "Adopt all",
         GuiActionIntent::ProjectImportConflictAsNew { .. } => "Import as new",
         GuiActionIntent::OpenProject { .. } => "Open project",
-        GuiActionIntent::EditAgent { .. } => "Edit Agent",
-        GuiActionIntent::AddCustomAgent => "Add custom Agent",
+        GuiActionIntent::UpdateAgentProjectSkillDirs { .. } => "Update Agent",
+        GuiActionIntent::AddCustomAgent { .. } => "Add custom Agent",
     }
+}
+
+fn parse_project_dir_text(value: &str) -> Vec<Utf8PathBuf> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(Utf8PathBuf::from)
+        .collect()
 }
 
 fn project_label(project_path: &camino::Utf8Path) -> String {

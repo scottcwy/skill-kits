@@ -25,6 +25,10 @@ pub enum SkillKitsError {
     },
     #[error("Agent not found: {agent_id}")]
     AgentNotFound { agent_id: AgentId },
+    #[error("Agent already configured: {agent_id}")]
+    AgentAlreadyConfigured { agent_id: AgentId },
+    #[error("invalid Agent config: {reason}")]
+    InvalidAgentConfig { reason: String },
     #[error("project not found: {path}")]
     ProjectNotFound { path: Utf8PathBuf },
     #[error("deploy conflict at {target}: target exists; adopt it, remove it, or choose another Skill name")]

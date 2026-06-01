@@ -1,5 +1,9 @@
+use skill_kits::core::agents::{
+    add_custom_agent_config, update_agent_project_skill_dirs, AgentConfig, AgentKind,
+};
 use skill_kits::core::config::{read_config, write_config, Config};
 use skill_kits::core::error::SkillKitsError;
+use skill_kits::core::ids::AgentId;
 use skill_kits::core::lock::StateLock;
 use skill_kits::core::paths::{ensure_app_dirs, AppPaths};
 use skill_kits::core::registry::{
@@ -148,4 +152,246 @@ fn registry_read_write_round_trips() {
 
     assert_eq!(read_skills_registry(&paths).unwrap(), skills);
     assert_eq!(read_deployments_registry(&paths).unwrap(), deployments);
+}
+
+#[test]
+fn add_custom_agent_config_writes_enabled_custom_agent() {
+    let temp_dir = TempDir::new().unwrap();
+    let paths = test_paths(&temp_dir);
+    ensure_app_dirs(&paths).unwrap();
+    write_config(&paths, &Config::default()).unwrap();
+
+    let agent = add_custom_agent_config(
+        &paths,
+        AgentId::new("zed"),
+        "Zed".to_string(),
+        ".zed/skills".into(),
+    )
+    .unwrap();
+
+    assert_eq!(agent.id, AgentId::new("zed"));
+    assert_eq!(agent.label, "Zed");
+    assert_eq!(agent.kind, AgentKind::Custom);
+    assert_eq!(
+        agent.project_skill_dirs,
+        vec![camino::Utf8PathBuf::from(".zed/skills")]
+    );
+    assert!(agent.enabled);
+    assert!(read_config(&paths)
+        .unwrap()
+        .agents
+        .iter()
+        .any(|configured| configured.id == AgentId::new("zed")));
+}
+
+#[test]
+fn add_custom_agent_config_rejects_duplicate_agent_id_and_preserves_config() {
+    let temp_dir = TempDir::new().unwrap();
+    let paths = test_paths(&temp_dir);
+    ensure_app_dirs(&paths).unwrap();
+    let config = Config::default();
+    write_config(&paths, &config).unwrap();
+
+    let err = add_custom_agent_config(
+        &paths,
+        AgentId::new("codex"),
+        "Duplicate Codex".to_string(),
+        ".duplicate/skills".into(),
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        SkillKitsError::AgentAlreadyConfigured { agent_id } if agent_id == AgentId::new("codex")
+    ));
+    assert_eq!(read_config(&paths).unwrap(), config);
+}
+
+#[test]
+fn add_custom_agent_config_rejects_empty_id_and_label() {
+    let temp_dir = TempDir::new().unwrap();
+    let paths = test_paths(&temp_dir);
+    ensure_app_dirs(&paths).unwrap();
+    let config = Config::default();
+    write_config(&paths, &config).unwrap();
+
+    let empty_id = add_custom_agent_config(
+        &paths,
+        AgentId::new(" "),
+        "Zed".to_string(),
+        ".zed/skills".into(),
+    )
+    .unwrap_err();
+    let empty_label = add_custom_agent_config(
+        &paths,
+        AgentId::new("zed"),
+        " ".to_string(),
+        ".zed/skills".into(),
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        empty_id,
+        SkillKitsError::InvalidAgentConfig { .. }
+    ));
+    assert!(matches!(
+        empty_label,
+        SkillKitsError::InvalidAgentConfig { .. }
+    ));
+    assert_eq!(read_config(&paths).unwrap(), config);
+}
+
+#[test]
+fn add_custom_agent_config_rejects_absolute_project_dir() {
+    let temp_dir = TempDir::new().unwrap();
+    let paths = test_paths(&temp_dir);
+    ensure_app_dirs(&paths).unwrap();
+    let config = Config::default();
+    write_config(&paths, &config).unwrap();
+
+    let err = add_custom_agent_config(
+        &paths,
+        AgentId::new("zed"),
+        "Zed".to_string(),
+        "/tmp/zed-skills".into(),
+    )
+    .unwrap_err();
+
+    assert!(matches!(err, SkillKitsError::InvalidSkillDir { .. }));
+    assert_eq!(read_config(&paths).unwrap(), config);
+}
+
+#[test]
+fn add_custom_agent_config_rejects_parent_traversal_project_dir() {
+    let temp_dir = TempDir::new().unwrap();
+    let paths = test_paths(&temp_dir);
+    ensure_app_dirs(&paths).unwrap();
+    let config = Config::default();
+    write_config(&paths, &config).unwrap();
+
+    let err = add_custom_agent_config(
+        &paths,
+        AgentId::new("zed"),
+        "Zed".to_string(),
+        "../outside".into(),
+    )
+    .unwrap_err();
+
+    assert!(matches!(err, SkillKitsError::InvalidSkillDir { .. }));
+    assert_eq!(read_config(&paths).unwrap(), config);
+}
+
+#[test]
+fn update_agent_project_skill_dirs_updates_existing_agent_and_preserves_other_agents() {
+    let temp_dir = TempDir::new().unwrap();
+    let paths = test_paths(&temp_dir);
+    ensure_app_dirs(&paths).unwrap();
+    write_config(
+        &paths,
+        &Config {
+            agents: vec![
+                AgentConfig {
+                    id: AgentId::new("codex"),
+                    label: "Codex".to_string(),
+                    kind: AgentKind::BuiltIn,
+                    global_skill_dirs: vec!["~/.codex/skills".into()],
+                    project_skill_dirs: vec![".agents/skills".into()],
+                    enabled: true,
+                },
+                AgentConfig {
+                    id: AgentId::new("custom"),
+                    label: "Custom".to_string(),
+                    kind: AgentKind::Custom,
+                    global_skill_dirs: vec!["~/custom/global".into()],
+                    project_skill_dirs: vec![".custom/skills".into()],
+                    enabled: true,
+                },
+            ],
+            ..Config::default()
+        },
+    )
+    .unwrap();
+
+    let updated = update_agent_project_skill_dirs(
+        &paths,
+        &AgentId::new("custom"),
+        vec![".custom/new-skills".into(), ".custom/shared".into()],
+    )
+    .unwrap();
+
+    assert_eq!(
+        updated.project_skill_dirs,
+        vec![
+            camino::Utf8PathBuf::from(".custom/new-skills"),
+            camino::Utf8PathBuf::from(".custom/shared"),
+        ]
+    );
+    assert_eq!(
+        updated.global_skill_dirs,
+        vec![camino::Utf8PathBuf::from("~/custom/global")]
+    );
+    let config = read_config(&paths).unwrap();
+    assert_eq!(config.agents[0].id, AgentId::new("codex"));
+    assert_eq!(
+        config.agents[0].project_skill_dirs,
+        vec![camino::Utf8PathBuf::from(".agents/skills")]
+    );
+    assert_eq!(config.agents[1], updated);
+}
+
+#[test]
+fn update_agent_project_skill_dirs_returns_agent_not_found_for_missing_agent() {
+    let temp_dir = TempDir::new().unwrap();
+    let paths = test_paths(&temp_dir);
+    ensure_app_dirs(&paths).unwrap();
+    let config = Config::default();
+    write_config(&paths, &config).unwrap();
+
+    let err = update_agent_project_skill_dirs(
+        &paths,
+        &AgentId::new("missing"),
+        vec![".missing/skills".into()],
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        err,
+        SkillKitsError::AgentNotFound { agent_id } if agent_id == AgentId::new("missing")
+    ));
+    assert_eq!(read_config(&paths).unwrap(), config);
+}
+
+#[test]
+fn update_agent_project_skill_dirs_rejects_absolute_dirs() {
+    let temp_dir = TempDir::new().unwrap();
+    let paths = test_paths(&temp_dir);
+    ensure_app_dirs(&paths).unwrap();
+    write_config(
+        &paths,
+        &Config {
+            agents: vec![AgentConfig {
+                id: AgentId::new("custom"),
+                label: "Custom".to_string(),
+                kind: AgentKind::Custom,
+                global_skill_dirs: Vec::new(),
+                project_skill_dirs: vec![".custom/skills".into()],
+                enabled: true,
+            }],
+            ..Config::default()
+        },
+    )
+    .unwrap();
+
+    let err = update_agent_project_skill_dirs(
+        &paths,
+        &AgentId::new("custom"),
+        vec!["/tmp/absolute".into()],
+    )
+    .unwrap_err();
+
+    assert!(matches!(err, SkillKitsError::InvalidSkillDir { .. }));
+    assert_eq!(
+        read_config(&paths).unwrap().agents[0].project_skill_dirs,
+        vec![camino::Utf8PathBuf::from(".custom/skills")]
+    );
 }
