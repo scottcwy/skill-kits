@@ -7,7 +7,7 @@ pub fn view_name() -> &'static str {
 
 pub fn renderable(model: &GuiModel) -> RenderableView {
     let selected_project = model.scope_project_path();
-    let main_rows: Vec<_> = model
+    let mut main_rows: Vec<_> = model
         .deployment_statuses
         .iter()
         .filter(|status| {
@@ -30,6 +30,21 @@ pub fn renderable(model: &GuiModel) -> RenderableView {
             ],
         })
         .collect();
+    if let Some(project) = model.selected_project_summary() {
+        main_rows.extend(project.discovered_skills.iter().map(|skill| RenderRow {
+            id: format!("discovered:{}:{}", skill.agent_id, skill.name),
+            cells: vec![
+                skill.name.clone(),
+                skill.agent_id.to_string(),
+                "Discovered".to_string(),
+                toggle_label(&skill.toggle),
+                "-".to_string(),
+                "-".to_string(),
+                "Not managed".to_string(),
+                skill.path.to_string(),
+            ],
+        }));
+    }
     let empty_message = if main_rows.is_empty() {
         Some(
             "No project deployments in this scope. Refresh a project, adopt existing Skills, or deploy a managed Skill.",
@@ -81,6 +96,26 @@ fn inspector_sections(model: &GuiModel) -> Vec<InspectorSection> {
     }
 
     if let Some(project) = model.selected_project_summary() {
+        if let Some(skill) = model.selected_discovered_project_skill() {
+            return vec![
+                InspectorSection {
+                    title: "Discovered Skill".to_string(),
+                    lines: vec![
+                        skill.name.clone(),
+                        format!("Agent {}", skill.agent_id),
+                        format!("Toggle {}", toggle_label(&skill.toggle)),
+                        skill.path.to_string(),
+                    ],
+                },
+                InspectorSection {
+                    title: "Actions".to_string(),
+                    lines: vec![
+                        "Adopt selected imports only this project Skill.".to_string(),
+                        "Adopt all imports all non-conflicting discovered Skills.".to_string(),
+                    ],
+                },
+            ];
+        }
         return vec![
             InspectorSection {
                 title: "Project".to_string(),
@@ -128,8 +163,17 @@ fn onboarding_lines(project: &crate::gui::state::ProjectSummary) -> Vec<String> 
                 "{} discovered project Skill(s) are available to adopt.",
                 project.discovered_unmanaged_count
             ),
-            "Adopt all emits a GUI intent; no Skill is adopted automatically.".to_string(),
+            "Select a discovered Skill to adopt it individually, or adopt all non-conflicting Skills."
+                .to_string(),
         ]);
+        lines.extend(project.discovered_skills.iter().map(|skill| {
+            format!(
+                "{}/{} - {}",
+                skill.agent_id,
+                skill.name,
+                toggle_label(&skill.toggle)
+            )
+        }));
         if !project.pending_conflicts.is_empty() {
             lines.push("Conflicts remain: import as new or skip.".to_string());
         }

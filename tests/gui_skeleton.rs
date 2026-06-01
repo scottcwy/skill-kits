@@ -10,12 +10,12 @@ use skill_kits::core::{
     registry::{
         read_deployments_registry, read_skills_registry, write_deployments_registry,
         write_skills_registry, DeploymentRecord, DeploymentsRegistry, ManagedSkill, SkillMetadata,
-        SkillSource, SkillsRegistry,
+        SkillSource, SkillsRegistry, ToggleState,
     },
 };
 use skill_kits::gui::state::{
     GuiActionIntent, GuiController, GuiModel, GuiScope, GuiStatusKind, NavigationView,
-    ProjectConflict, ProjectSummary, DRIFT_REMOVE_CONFIRMATION_MESSAGE,
+    ProjectConflict, ProjectDiscoveredSkill, ProjectSummary, DRIFT_REMOVE_CONFIRMATION_MESSAGE,
     GLOBAL_UNINSTALL_CONFIRMATION_MESSAGE,
 };
 use skill_kits::gui::{
@@ -113,6 +113,19 @@ fn write_config_with_codex_project(paths: &AppPaths, project: &camino::Utf8Path)
         },
     )
     .unwrap();
+}
+
+fn discovered_skill(
+    project: &camino::Utf8Path,
+    agent_id: &str,
+    name: &str,
+) -> ProjectDiscoveredSkill {
+    ProjectDiscoveredSkill {
+        agent_id: AgentId::new(agent_id),
+        name: name.to_string(),
+        path: project.join(".agents/skills").join(name),
+        toggle: ToggleState::Enabled,
+    }
 }
 
 fn section_lines(model: &GuiModel, title: &str) -> Vec<String> {
@@ -423,6 +436,10 @@ fn projects_onboarding_renders_adopt_all_for_discovered_unmanaged_summary() {
         deployment_count: 0,
         onboarding_scanned: false,
         discovered_unmanaged_count: 2,
+        discovered_skills: vec![
+            discovered_skill(&project, "codex", "api-helper"),
+            discovered_skill(&project, "codex", "docs-helper"),
+        ],
         last_adopt_all_result: None,
         pending_conflicts: Vec::new(),
         skipped_conflicts: Vec::new(),
@@ -439,10 +456,33 @@ fn projects_onboarding_renders_adopt_all_for_discovered_unmanaged_summary() {
         onboarding.lines,
         vec![
             "2 discovered project Skill(s) are available to adopt.".to_string(),
-            "Adopt all emits a GUI intent; no Skill is adopted automatically.".to_string(),
+            "Select a discovered Skill to adopt it individually, or adopt all non-conflicting Skills."
+                .to_string(),
+            "codex/api-helper - Enabled".to_string(),
+            "codex/docs-helper - Enabled".to_string(),
         ]
     );
     assert_eq!(project_actions(&model), vec![ProjectAction::AdoptAll]);
+    let rows = model.renderable_view().main_rows;
+    assert!(rows
+        .iter()
+        .any(|row| row.id == "discovered:codex:api-helper"
+            && row.cells[0] == "api-helper"
+            && row.cells[2] == "Discovered"
+            && row.cells[3] == "Enabled"));
+    assert!(model.select_render_row("discovered:codex:api-helper"));
+    assert_eq!(
+        project_actions(&model),
+        vec![ProjectAction::AdoptSelected, ProjectAction::AdoptAll]
+    );
+    assert_eq!(
+        model.request_adopt_selected_discovered_project_skill(),
+        Some(GuiActionIntent::ProjectAdoptSelected {
+            project_path: project.clone(),
+            agent_id: AgentId::new("codex"),
+            skill_name: "api-helper".to_string(),
+        })
+    );
     assert_eq!(
         model.request_adopt_all_discovered_for_selected_project(),
         Some(GuiActionIntent::ProjectAdoptAll {
@@ -1277,7 +1317,8 @@ fn selecting_project_clears_stale_deployment_selection_for_onboarding() {
         onboarding.lines,
         vec![
             "2 discovered project Skill(s) are available to adopt.".to_string(),
-            "Adopt all emits a GUI intent; no Skill is adopted automatically.".to_string(),
+            "Select a discovered Skill to adopt it individually, or adopt all non-conflicting Skills."
+                .to_string(),
         ]
     );
 }
@@ -1345,6 +1386,7 @@ fn project_adopt_all_intent_executes_for_discovered_project_skills() {
         deployment_count: 0,
         onboarding_scanned: false,
         discovered_unmanaged_count: 1,
+        discovered_skills: Vec::new(),
         last_adopt_all_result: None,
         pending_conflicts: Vec::new(),
         skipped_conflicts: Vec::new(),
@@ -1384,6 +1426,58 @@ fn project_adopt_all_intent_executes_for_discovered_project_skills() {
         .lines
         .contains(&"1 adopted, 0 conflicts".to_string()));
     assert!(project.join(".agents/skills/unmanaged/SKILL.md").exists());
+}
+
+#[test]
+fn project_adopt_selected_intent_imports_only_selected_discovered_skill() {
+    let temp_dir = TempDir::new().unwrap();
+    let paths = test_paths(&temp_dir);
+    let project = project_path(&temp_dir, "sample-app");
+    ensure_app_dirs(&paths).unwrap();
+    write_config(&paths, &Config::default()).unwrap();
+    write_skills_registry(&paths, &SkillsRegistry::default()).unwrap();
+    write_deployments_registry(&paths, &DeploymentsRegistry::default()).unwrap();
+    write_skill(&project.join(".agents/skills/first"), "# First\n");
+    write_skill(&project.join(".agents/skills/second"), "# Second\n");
+
+    let mut model = GuiModel::load(&paths).unwrap();
+    model.navigate(NavigationView::Projects);
+    model.select_project(project.clone());
+    model.request_refresh_selected_project().unwrap();
+    let controller = GuiController::new(paths.clone());
+    assert!(model.execute_next_intent(&controller).unwrap().is_some());
+
+    assert!(model.select_render_row("discovered:codex:first"));
+    assert_eq!(
+        model.request_adopt_selected_discovered_project_skill(),
+        Some(GuiActionIntent::ProjectAdoptSelected {
+            project_path: project.clone(),
+            agent_id: AgentId::new("codex"),
+            skill_name: "first".to_string(),
+        })
+    );
+    assert_eq!(
+        model.execute_next_intent(&controller).unwrap(),
+        Some(GuiActionIntent::ProjectAdoptSelected {
+            project_path: project.clone(),
+            agent_id: AgentId::new("codex"),
+            skill_name: "first".to_string(),
+        })
+    );
+
+    assert_eq!(model.skills.len(), 1);
+    assert_eq!(model.skills[0].name, "first");
+    assert_eq!(model.deployments.len(), 1);
+    assert_eq!(model.deployments[0].skill_name, "first");
+    let summary = model
+        .project_summaries
+        .iter()
+        .find(|summary| summary.path == project)
+        .unwrap();
+    assert_eq!(summary.discovered_unmanaged_count, 1);
+    assert_eq!(summary.discovered_skills[0].name, "second");
+    assert!(model.selected_discovered_project_skill().is_none());
+    assert!(project.join(".agents/skills/second/SKILL.md").exists());
 }
 
 #[test]
@@ -1430,6 +1524,7 @@ fn project_adopt_all_intent_runs_for_multiple_enabled_agents() {
         deployment_count: 0,
         onboarding_scanned: false,
         discovered_unmanaged_count: 2,
+        discovered_skills: Vec::new(),
         last_adopt_all_result: None,
         pending_conflicts: Vec::new(),
         skipped_conflicts: Vec::new(),
@@ -1498,6 +1593,7 @@ fn project_adopt_all_keeps_conflicting_project_skills_discovered() {
         deployment_count: 0,
         onboarding_scanned: false,
         discovered_unmanaged_count: 1,
+        discovered_skills: Vec::new(),
         last_adopt_all_result: None,
         pending_conflicts: Vec::new(),
         skipped_conflicts: Vec::new(),
@@ -1584,6 +1680,7 @@ fn project_conflict_import_as_new_intent_resolves_first_pending_conflict() {
         deployment_count: 0,
         onboarding_scanned: false,
         discovered_unmanaged_count: 1,
+        discovered_skills: Vec::new(),
         last_adopt_all_result: None,
         pending_conflicts: vec![ProjectConflict {
             agent_id: AgentId::new("codex"),
@@ -1627,6 +1724,7 @@ fn project_conflict_skip_dismisses_first_pending_conflict_without_registry_mutat
         deployment_count: 0,
         onboarding_scanned: false,
         discovered_unmanaged_count: 1,
+        discovered_skills: Vec::new(),
         last_adopt_all_result: None,
         pending_conflicts: vec![ProjectConflict {
             agent_id: AgentId::new("codex"),
@@ -1677,6 +1775,7 @@ fn refresh_project_keeps_unresolved_project_conflicts_actionable() {
         deployment_count: 0,
         onboarding_scanned: false,
         discovered_unmanaged_count: 1,
+        discovered_skills: Vec::new(),
         last_adopt_all_result: None,
         pending_conflicts: Vec::new(),
         skipped_conflicts: Vec::new(),
@@ -1745,6 +1844,7 @@ fn skipped_conflict_does_not_block_adopt_all_for_new_unrelated_project_skill() {
         deployment_count: 0,
         onboarding_scanned: false,
         discovered_unmanaged_count: 1,
+        discovered_skills: Vec::new(),
         last_adopt_all_result: None,
         pending_conflicts: vec![ProjectConflict {
             agent_id: AgentId::new("codex"),

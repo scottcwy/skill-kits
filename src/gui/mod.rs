@@ -23,6 +23,7 @@ pub enum SkillAction {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProjectAction {
     Refresh,
+    AdoptSelected,
     AdoptAll,
     ImportAsNew,
     Skip,
@@ -59,6 +60,7 @@ impl AgentAction {
 impl ProjectAction {
     const REFRESH: [Self; 1] = [Self::Refresh];
     const ONBOARDING: [Self; 1] = [Self::AdoptAll];
+    const SELECTED_DISCOVERED: [Self; 2] = [Self::AdoptSelected, Self::AdoptAll];
     const CONFLICT: [Self; 2] = [Self::ImportAsNew, Self::Skip];
 
     const NORMAL: [Self; 6] = [
@@ -75,6 +77,7 @@ impl ProjectAction {
     fn label(self) -> &'static str {
         match self {
             Self::Refresh => "Refresh",
+            Self::AdoptSelected => "Adopt selected",
             Self::AdoptAll => "Adopt all",
             Self::ImportAsNew => "Import as new",
             Self::Skip => "Skip",
@@ -157,6 +160,13 @@ pub fn project_actions(model: &GuiModel) -> Vec<ProjectAction> {
         && model.selected_deployment_status().is_none()
     {
         deploy_action.extend(ProjectAction::CONFLICT);
+        return deploy_action;
+    }
+
+    if model.selected_discovered_project_skill().is_some()
+        && model.selected_deployment_status().is_none()
+    {
+        deploy_action.extend(ProjectAction::SELECTED_DISCOVERED);
         return deploy_action;
     }
 
@@ -628,6 +638,9 @@ fn render_project_action_button(
     match action {
         ProjectAction::Refresh => {
             let _ = model.request_refresh_selected_project();
+        }
+        ProjectAction::AdoptSelected => {
+            let _ = model.request_adopt_selected_discovered_project_skill();
         }
         ProjectAction::AdoptAll => {
             let _ = model.request_adopt_all_discovered_for_selected_project();

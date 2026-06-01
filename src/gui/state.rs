@@ -1,5 +1,5 @@
 use crate::core::{
-    adopt::{project_adopt_all, project_adopt_conflict_as_new, ProjectAdoptRequest},
+    adopt::{project_adopt, project_adopt_all, project_adopt_conflict_as_new, ProjectAdoptRequest},
     agents::{
         add_custom_agent_config, remove_custom_agent_config, reset_agent_project_skill_dirs,
         update_agent_project_skill_dirs, AgentConfig, AgentKind,
@@ -20,7 +20,7 @@ use crate::core::{
     },
     registry::{
         read_deployments_registry, read_skills_registry, DeploymentRecord, DeploymentStatus,
-        ManagedSkill, SkillSource,
+        ManagedSkill, SkillSource, ToggleState,
     },
     scan::{scan_skill_dir, RiskFinding, RiskSeverity},
     status::{global_status, HealthState},
@@ -106,6 +106,11 @@ pub enum GuiActionIntent {
     ProjectAdoptAll {
         project_path: Utf8PathBuf,
     },
+    ProjectAdoptSelected {
+        project_path: Utf8PathBuf,
+        agent_id: AgentId,
+        skill_name: String,
+    },
     ProjectImportConflictAsNew {
         project_path: Utf8PathBuf,
         agent_id: AgentId,
@@ -152,6 +157,7 @@ pub enum GuiControllerOutcome {
     ProjectScan {
         project_path: Utf8PathBuf,
         discovered_unmanaged_count: usize,
+        discovered_skills: Vec<ProjectDiscoveredSkill>,
         adopt_result: Option<ProjectAdoptAllSummary>,
         pending_conflicts: Vec<ProjectConflict>,
         preserve_existing_conflicts: bool,
@@ -171,6 +177,34 @@ pub struct ProjectAdoptAllSummary {
 pub struct ProjectConflict {
     pub agent_id: AgentId,
     pub skill_name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectDiscoveredSkill {
+    pub agent_id: AgentId,
+    pub name: String,
+    pub path: Utf8PathBuf,
+    pub toggle: ToggleState,
+}
+
+impl From<DiscoveredProjectSkill> for ProjectDiscoveredSkill {
+    fn from(skill: DiscoveredProjectSkill) -> Self {
+        Self {
+            agent_id: skill.agent_id,
+            name: skill.name,
+            path: skill.path,
+            toggle: skill.toggle,
+        }
+    }
+}
+
+impl ProjectDiscoveredSkill {
+    fn conflict_key(&self) -> ProjectConflict {
+        ProjectConflict {
+            agent_id: self.agent_id.clone(),
+            skill_name: self.name.clone(),
+        }
+    }
 }
 
 fn unresolved_project_conflicts(discovered: &[DiscoveredProjectSkill]) -> Vec<ProjectConflict> {
@@ -329,9 +363,43 @@ impl GuiController {
                 GuiControllerOutcome::ProjectScan {
                     project_path: report.project_path,
                     discovered_unmanaged_count: report.discovered.len(),
+                    discovered_skills: report
+                        .discovered
+                        .into_iter()
+                        .map(ProjectDiscoveredSkill::from)
+                        .collect(),
                     adopt_result: None,
                     pending_conflicts,
                     preserve_existing_conflicts: true,
+                }
+            }
+            GuiActionIntent::ProjectAdoptSelected {
+                project_path,
+                agent_id,
+                skill_name,
+            } => {
+                project_adopt(ProjectAdoptRequest {
+                    app_paths: &self.paths,
+                    project_path,
+                    agent_id,
+                    skill_name,
+                })?;
+                let report = project_onboarding_scan(ProjectOnboardingScanRequest {
+                    app_paths: &self.paths,
+                    project_path,
+                })?;
+                let pending_conflicts = unresolved_project_conflicts(&report.discovered);
+                GuiControllerOutcome::ProjectScan {
+                    project_path: report.project_path,
+                    discovered_unmanaged_count: report.discovered.len(),
+                    discovered_skills: report
+                        .discovered
+                        .into_iter()
+                        .map(ProjectDiscoveredSkill::from)
+                        .collect(),
+                    adopt_result: None,
+                    pending_conflicts,
+                    preserve_existing_conflicts: false,
                 }
             }
             GuiActionIntent::ProjectAdoptAll { project_path } => {
@@ -356,6 +424,11 @@ impl GuiController {
                 GuiControllerOutcome::ProjectScan {
                     project_path: report.project_path,
                     discovered_unmanaged_count: report.discovered.len(),
+                    discovered_skills: report
+                        .discovered
+                        .into_iter()
+                        .map(ProjectDiscoveredSkill::from)
+                        .collect(),
                     adopt_result: Some(ProjectAdoptAllSummary {
                         imported,
                         conflicts,
@@ -383,6 +456,11 @@ impl GuiController {
                 GuiControllerOutcome::ProjectScan {
                     project_path: report.project_path,
                     discovered_unmanaged_count: report.discovered.len(),
+                    discovered_skills: report
+                        .discovered
+                        .into_iter()
+                        .map(ProjectDiscoveredSkill::from)
+                        .collect(),
                     adopt_result: None,
                     pending_conflicts,
                     preserve_existing_conflicts: false,
@@ -452,6 +530,7 @@ pub struct ProjectSummary {
     pub deployment_count: usize,
     pub onboarding_scanned: bool,
     pub discovered_unmanaged_count: usize,
+    pub discovered_skills: Vec<ProjectDiscoveredSkill>,
     pub last_adopt_all_result: Option<ProjectAdoptAllSummary>,
     pub pending_conflicts: Vec<ProjectConflict>,
     pub skipped_conflicts: Vec<ProjectConflict>,
@@ -583,6 +662,7 @@ pub struct GuiModel {
     selected_agent: Option<AgentId>,
     selected_project: Option<Utf8PathBuf>,
     selected_deployment: Option<String>,
+    selected_discovered_project_skill: Option<ProjectConflict>,
     pending_uninstall_confirmation: Option<SkillId>,
     pending_remove_confirmation: Option<String>,
     pending_intents: Vec<GuiActionIntent>,
@@ -623,6 +703,7 @@ impl GuiModel {
                     deployment_count,
                     onboarding_scanned: false,
                     discovered_unmanaged_count: 0,
+                    discovered_skills: Vec::new(),
                     last_adopt_all_result: None,
                     pending_conflicts: Vec::new(),
                     skipped_conflicts: Vec::new(),
@@ -682,6 +763,7 @@ impl GuiModel {
             selected_agent: None,
             selected_project,
             selected_deployment: None,
+            selected_discovered_project_skill: None,
             pending_uninstall_confirmation: None,
             pending_remove_confirmation: None,
             pending_intents: Vec::new(),
@@ -701,6 +783,7 @@ impl GuiModel {
         if let GuiScope::Project(path) = &scope {
             self.selected_project = Some(path.clone());
             self.selected_deployment = None;
+            self.selected_discovered_project_skill = None;
             self.pending_remove_confirmation = None;
         }
         self.active_scope = scope;
@@ -724,6 +807,7 @@ impl GuiModel {
     pub fn select_project(&mut self, project_path: Utf8PathBuf) {
         self.selected_project = Some(project_path);
         self.selected_deployment = None;
+        self.selected_discovered_project_skill = None;
         self.pending_remove_confirmation = None;
     }
 
@@ -736,6 +820,7 @@ impl GuiModel {
             self.pending_remove_confirmation = None;
         }
         self.selected_deployment = Some(deployment_id);
+        self.selected_discovered_project_skill = None;
     }
 
     pub fn select_render_row(&mut self, row_id: &str) -> bool {
@@ -758,6 +843,20 @@ impl GuiModel {
                 }
             }
             NavigationView::Projects => {
+                if let Some(discovered) = parse_discovered_project_row_id(row_id) {
+                    if self.selected_project_summary().is_some_and(|summary| {
+                        summary.discovered_skills.iter().any(|skill| {
+                            skill.agent_id == discovered.agent_id
+                                && skill.name == discovered.skill_name
+                        })
+                    }) {
+                        self.selected_discovered_project_skill = Some(discovered);
+                        self.selected_deployment = None;
+                        self.pending_remove_confirmation = None;
+                        return true;
+                    }
+                    return false;
+                }
                 if let Some(project_path) = self
                     .deployments
                     .iter()
@@ -984,6 +1083,22 @@ impl GuiModel {
         })
     }
 
+    pub fn request_adopt_selected_discovered_project_skill(&mut self) -> Option<GuiActionIntent> {
+        let project = self.selected_project_summary()?;
+        let selected = self.selected_discovered_project_skill.as_ref()?;
+        let skill = project.discovered_skills.iter().find(|skill| {
+            skill.agent_id == selected.agent_id && skill.name == selected.skill_name
+        })?;
+        if project.pending_conflicts.contains(&skill.conflict_key()) {
+            return None;
+        }
+        self.push_intent(GuiActionIntent::ProjectAdoptSelected {
+            project_path: project.path.clone(),
+            agent_id: skill.agent_id.clone(),
+            skill_name: skill.name.clone(),
+        })
+    }
+
     pub fn request_import_selected_project_conflict_as_new(&mut self) -> Option<GuiActionIntent> {
         let project = self.selected_project_summary()?;
         let conflict = project.pending_conflicts.first()?;
@@ -1175,6 +1290,7 @@ impl GuiModel {
         let selected_agent = self.selected_agent.clone();
         let selected_project = self.selected_project.clone();
         let selected_deployment = self.selected_deployment.clone();
+        let selected_discovered_project_skill = self.selected_discovered_project_skill.clone();
         let pending_uninstall_confirmation = self.pending_uninstall_confirmation.clone();
         let pending_remove_confirmation = self.pending_remove_confirmation.clone();
         let pending_intents = self.pending_intents.clone();
@@ -1193,6 +1309,7 @@ impl GuiModel {
                     summary.path.clone(),
                     summary.pending_conflicts.clone(),
                     summary.skipped_conflicts.clone(),
+                    summary.discovered_skills.clone(),
                 )
             })
             .collect::<Vec<_>>();
@@ -1212,7 +1329,9 @@ impl GuiModel {
         };
         let success_message = self.intent_success_message(&intent, &outcome);
         *self = Self::load(controller.paths())?;
-        for (path, pending_conflicts, skipped_conflicts) in project_conflict_state {
+        for (path, pending_conflicts, skipped_conflicts, discovered_skills) in
+            project_conflict_state
+        {
             if let Some(summary) = self
                 .project_summaries
                 .iter_mut()
@@ -1220,6 +1339,9 @@ impl GuiModel {
             {
                 summary.pending_conflicts = pending_conflicts;
                 summary.skipped_conflicts = skipped_conflicts;
+                if !discovered_skills.is_empty() && summary.discovered_skills.is_empty() {
+                    summary.discovered_skills = discovered_skills;
+                }
             }
         }
         self.active_view = active_view;
@@ -1247,6 +1369,14 @@ impl GuiModel {
                 .iter()
                 .any(|deployment| deployment.id == *selected)
         });
+        self.selected_discovered_project_skill =
+            selected_discovered_project_skill.filter(|selected| {
+                self.selected_project_summary().is_some_and(|summary| {
+                    summary.discovered_skills.iter().any(|skill| {
+                        skill.agent_id == selected.agent_id && skill.name == selected.skill_name
+                    })
+                })
+            });
         self.pending_uninstall_confirmation = pending_uninstall_confirmation
             .filter(|pending| self.skills.iter().any(|skill| skill.id == *pending));
         self.pending_remove_confirmation = pending_remove_confirmation.filter(|pending| {
@@ -1271,6 +1401,15 @@ impl GuiModel {
             message: success_message,
         });
         self.apply_controller_outcome(outcome);
+        if let Some(selected) = &self.selected_discovered_project_skill {
+            if !self.selected_project_summary().is_some_and(|summary| {
+                summary.discovered_skills.iter().any(|skill| {
+                    skill.agent_id == selected.agent_id && skill.name == selected.skill_name
+                })
+            }) {
+                self.selected_discovered_project_skill = None;
+            }
+        }
         Ok(Some(intent))
     }
 
@@ -1392,6 +1531,11 @@ impl GuiModel {
                     project_label(project_path)
                 )
             }
+            GuiActionIntent::ProjectAdoptSelected {
+                project_path,
+                skill_name,
+                ..
+            } => format!("Adopted {skill_name} for {}.", project_label(project_path)),
             GuiActionIntent::ProjectImportConflictAsNew {
                 project_path,
                 skill_name,
@@ -1483,6 +1627,7 @@ impl GuiModel {
             GuiControllerOutcome::ProjectScan {
                 project_path,
                 discovered_unmanaged_count,
+                discovered_skills,
                 adopt_result,
                 pending_conflicts,
                 preserve_existing_conflicts,
@@ -1514,10 +1659,15 @@ impl GuiModel {
                     } else {
                         pending_conflicts_minus_skipped(pending_conflicts, &skipped_conflicts)
                     };
+                    let discovered_skills = filter_discovered_skills(
+                        discovered_skills,
+                        &pending_conflicts,
+                        &skipped_conflicts,
+                    );
                     summary.deployment_count = deployment_count;
                     summary.onboarding_scanned = true;
-                    summary.discovered_unmanaged_count =
-                        discovered_unmanaged_count.saturating_sub(skipped_conflicts.len());
+                    summary.discovered_unmanaged_count = discovered_skills.len();
+                    summary.discovered_skills = discovered_skills;
                     summary.last_adopt_all_result = adopt_result;
                     summary.pending_conflicts = pending_conflicts;
                     summary.skipped_conflicts = skipped_conflicts;
@@ -1530,7 +1680,8 @@ impl GuiModel {
                         path: project_path,
                         deployment_count,
                         onboarding_scanned: true,
-                        discovered_unmanaged_count,
+                        discovered_unmanaged_count: discovered_skills.len(),
+                        discovered_skills,
                         last_adopt_all_result: adopt_result,
                         pending_conflicts,
                         skipped_conflicts: Vec::new(),
@@ -1557,6 +1708,7 @@ impl GuiModel {
                         deployment_count,
                         onboarding_scanned: false,
                         discovered_unmanaged_count: 0,
+                        discovered_skills: Vec::new(),
                         last_adopt_all_result: None,
                         pending_conflicts: Vec::new(),
                         skipped_conflicts: Vec::new(),
@@ -1631,6 +1783,14 @@ impl GuiModel {
         })
     }
 
+    pub fn selected_discovered_project_skill(&self) -> Option<&ProjectDiscoveredSkill> {
+        let selected = self.selected_discovered_project_skill.as_ref()?;
+        self.selected_project_summary()?
+            .discovered_skills
+            .iter()
+            .find(|skill| skill.agent_id == selected.agent_id && skill.name == selected.skill_name)
+    }
+
     pub fn scope_project_path(&self) -> Option<Utf8PathBuf> {
         match &self.active_scope {
             GuiScope::GlobalInventory => self.selected_project.clone(),
@@ -1676,6 +1836,7 @@ impl Default for GuiModel {
             selected_deployment: None,
             pending_uninstall_confirmation: None,
             pending_remove_confirmation: None,
+            selected_discovered_project_skill: None,
             pending_intents: Vec::new(),
             last_status: None,
             skill_risk_reports: Vec::new(),
@@ -1698,6 +1859,7 @@ fn action_label(intent: &GuiActionIntent) -> &'static str {
         GuiActionIntent::RedeployDeployment { .. } => "Redeploy",
         GuiActionIntent::RefreshProject { .. } => "Refresh",
         GuiActionIntent::ProjectAdoptAll { .. } => "Adopt all",
+        GuiActionIntent::ProjectAdoptSelected { .. } => "Adopt selected",
         GuiActionIntent::ProjectImportConflictAsNew { .. } => "Import as new",
         GuiActionIntent::OpenProject { .. } => "Open project",
         GuiActionIntent::UpdateAgentProjectSkillDirs { .. } => "Update Agent",
@@ -1705,6 +1867,32 @@ fn action_label(intent: &GuiActionIntent) -> &'static str {
         GuiActionIntent::RemoveCustomAgent { .. } => "Remove custom Agent",
         GuiActionIntent::AddCustomAgent { .. } => "Add custom Agent",
     }
+}
+
+fn filter_discovered_skills(
+    discovered_skills: Vec<ProjectDiscoveredSkill>,
+    pending_conflicts: &[ProjectConflict],
+    skipped_conflicts: &[ProjectConflict],
+) -> Vec<ProjectDiscoveredSkill> {
+    discovered_skills
+        .into_iter()
+        .filter(|skill| {
+            let key = skill.conflict_key();
+            pending_conflicts.contains(&key) || !skipped_conflicts.contains(&key)
+        })
+        .collect()
+}
+
+fn parse_discovered_project_row_id(row_id: &str) -> Option<ProjectConflict> {
+    let rest = row_id.strip_prefix("discovered:")?;
+    let (agent_id, skill_name) = rest.split_once(':')?;
+    if agent_id.is_empty() || skill_name.is_empty() {
+        return None;
+    }
+    Some(ProjectConflict {
+        agent_id: AgentId::new(agent_id),
+        skill_name: skill_name.to_string(),
+    })
 }
 
 fn parse_project_dir_text(value: &str) -> Vec<Utf8PathBuf> {
