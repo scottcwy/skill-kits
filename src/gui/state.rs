@@ -877,6 +877,14 @@ impl GuiModel {
         &self.pending_intents
     }
 
+    pub fn append_pending_intents(&mut self, intents: Vec<GuiActionIntent>) {
+        self.pending_intents.extend(intents);
+    }
+
+    pub fn take_pending_intents(&mut self) -> Vec<GuiActionIntent> {
+        std::mem::take(&mut self.pending_intents)
+    }
+
     pub fn pending_action_status_label(&self) -> String {
         let Some(intent) = self.pending_intents.first() else {
             return "Idle".to_string();
@@ -886,6 +894,10 @@ impl GuiModel {
             action_label(intent),
             self.pending_intents.len()
         )
+    }
+
+    pub fn next_action_label(&self) -> Option<&'static str> {
+        self.pending_intents.first().map(action_label)
     }
 
     pub fn last_status(&self) -> Option<&GuiStatus> {

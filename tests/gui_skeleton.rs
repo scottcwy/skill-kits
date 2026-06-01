@@ -688,7 +688,7 @@ fn gui_status_feedback_records_last_success_and_last_error() {
 }
 
 #[test]
-fn app_shell_executes_one_pending_intent_and_surfaces_status() {
+fn app_shell_dispatches_pending_intent_to_background_worker_and_collects_status() {
     let temp_dir = TempDir::new().unwrap();
     let paths = test_paths(&temp_dir);
     let project = project_path(&temp_dir, "sample-app");
@@ -717,8 +717,21 @@ fn app_shell_executes_one_pending_intent_and_surfaces_status() {
         .unwrap();
 
     let mut app = SkillKitsGuiApp::new(model, GuiController::new(paths));
-    app.execute_one_pending_intent();
+    app.dispatch_one_pending_intent();
 
+    assert!(app.has_running_intent());
+    assert_eq!(app.action_status_label(), "Working: Deploy (1 queued)");
+    assert_eq!(app.model().pending_intents().len(), 1);
+    assert!(app.model().deployments.is_empty());
+
+    for _ in 0..50 {
+        if app.collect_finished_intent() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    assert!(!app.has_running_intent());
     assert!(app.model().pending_intents().is_empty());
     assert_eq!(app.model().deployments.len(), 1);
     assert_eq!(
@@ -728,6 +741,92 @@ fn app_shell_executes_one_pending_intent_and_surfaces_status() {
     assert!(project
         .join(".agents/skills/frontend-design/SKILL.md")
         .exists());
+}
+
+#[test]
+fn app_shell_collects_background_intent_errors_into_visible_status() {
+    let temp_dir = TempDir::new().unwrap();
+    let paths = test_paths(&temp_dir);
+    let project = project_path(&temp_dir, "sample-app");
+    std::fs::create_dir_all(&project).unwrap();
+    ensure_app_dirs(&paths).unwrap();
+    write_config_with_codex_project(&paths, &project);
+
+    let mut skill = managed_skill(&paths);
+    write_skill(&skill.managed_path, "# Frontend Design\n");
+    skill.content_hash = hash_skill_dir(&skill.managed_path).unwrap();
+    write_skills_registry(
+        &paths,
+        &SkillsRegistry {
+            version: 1,
+            skills: vec![skill],
+        },
+    )
+    .unwrap();
+    write_deployments_registry(&paths, &DeploymentsRegistry::default()).unwrap();
+    write_skill(
+        &project.join(".agents/skills/frontend-design"),
+        "# Existing unmanaged target\n",
+    );
+
+    let mut model = GuiModel::load(&paths).unwrap();
+    model.select_scope(GuiScope::Project(project));
+    model.select_skill(SkillId::new("frontend-design-a1b2c3d4"));
+    model
+        .request_deploy_selected_skill_to_default_agent()
+        .unwrap();
+
+    let mut app = SkillKitsGuiApp::new(model, GuiController::new(paths));
+    app.dispatch_one_pending_intent();
+    for _ in 0..50 {
+        if app.collect_finished_intent() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    assert!(!app.has_running_intent());
+    assert_eq!(app.model().pending_intents().len(), 0);
+    assert_eq!(
+        app.model().last_status().unwrap().kind,
+        GuiStatusKind::Error
+    );
+    assert!(app
+        .model()
+        .last_status()
+        .unwrap()
+        .message
+        .contains("Deploy conflict"));
+}
+
+#[test]
+fn app_shell_preserves_actions_queued_while_background_intent_is_running() {
+    let temp_dir = TempDir::new().unwrap();
+    let paths = test_paths(&temp_dir);
+    ensure_app_dirs(&paths).unwrap();
+    write_config(&paths, &Config::default()).unwrap();
+    write_skills_registry(&paths, &SkillsRegistry::default()).unwrap();
+    write_deployments_registry(&paths, &DeploymentsRegistry::default()).unwrap();
+
+    let mut model = GuiModel::load(&paths).unwrap();
+    model.select_agent(AgentId::new("codex"));
+    model.request_reset_selected_agent_project_dirs().unwrap();
+
+    let mut app = SkillKitsGuiApp::new(model, GuiController::new(paths));
+    app.dispatch_one_pending_intent();
+    app.model_mut()
+        .request_reset_selected_agent_project_dirs()
+        .unwrap();
+
+    for _ in 0..50 {
+        if app.collect_finished_intent() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    assert_eq!(app.model().pending_intents().len(), 1);
+    assert_eq!(app.action_status_label(), "Next: Reset Agent (1 queued)");
 }
 
 #[test]

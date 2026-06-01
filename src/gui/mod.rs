@@ -11,6 +11,8 @@ use state::{
     RenderableView, UiColors, DRIFT_REMOVE_CONFIRMATION_MESSAGE,
     GLOBAL_UNINSTALL_CONFIRMATION_MESSAGE,
 };
+use std::sync::mpsc::{self, Receiver};
+use std::thread;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SkillAction {
@@ -202,6 +204,13 @@ pub struct SkillKitsGuiApp {
     model: GuiModel,
     controller: GuiController,
     colors: UiColors,
+    running_intent: Option<RunningIntent>,
+}
+
+struct RunningIntent {
+    label: &'static str,
+    intent: state::GuiActionIntent,
+    receiver: Receiver<GuiModel>,
 }
 
 impl SkillKitsGuiApp {
@@ -217,11 +226,31 @@ impl SkillKitsGuiApp {
             model,
             controller,
             colors: UiColors::dark(),
+            running_intent: None,
         }
     }
 
     pub fn model(&self) -> &GuiModel {
         &self.model
+    }
+
+    pub fn model_mut(&mut self) -> &mut GuiModel {
+        &mut self.model
+    }
+
+    pub fn has_running_intent(&self) -> bool {
+        self.running_intent.is_some()
+    }
+
+    pub fn action_status_label(&self) -> String {
+        if let Some(running) = &self.running_intent {
+            return format!(
+                "Working: {} ({} queued)",
+                running.label,
+                self.model.pending_intents().len()
+            );
+        }
+        self.model.pending_action_status_label()
     }
 }
 
@@ -238,7 +267,13 @@ pub fn run_native(paths: AppPaths) -> anyhow::Result<()> {
 impl eframe::App for SkillKitsGuiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         apply_dark_theme(ctx, self.colors);
-        self.execute_one_pending_intent();
+        if self.collect_finished_intent() {
+            ctx.request_repaint();
+        }
+        self.dispatch_one_pending_intent();
+        if self.has_running_intent() {
+            ctx.request_repaint();
+        }
 
         egui::TopBottomPanel::top("top_bar")
             .frame(egui::Frame::none().fill(self.colors.surface_1))
@@ -252,7 +287,7 @@ impl eframe::App for SkillKitsGuiApp {
                         let _ = self.model.request_refresh_selected_project();
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(self.model.pending_action_status_label());
+                        ui.label(self.action_status_label());
                     });
                 });
                 if let Some(status) = self.model.last_status() {
@@ -332,6 +367,56 @@ impl SkillKitsGuiApp {
     pub fn execute_one_pending_intent(&mut self) {
         let _ = self.model.execute_next_intent(&self.controller);
     }
+
+    pub fn dispatch_one_pending_intent(&mut self) {
+        if self.running_intent.is_some() || self.model.pending_intents().is_empty() {
+            return;
+        }
+        let label = self.model.next_action_label().unwrap_or("Action");
+        let intent = self.model.pending_intents()[0].clone();
+        let mut model = self.model.clone();
+        let controller = self.controller.clone();
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = model.execute_next_intent(&controller);
+            let _ = sender.send(model);
+        });
+        self.running_intent = Some(RunningIntent {
+            label,
+            intent,
+            receiver,
+        });
+    }
+
+    pub fn collect_finished_intent(&mut self) -> bool {
+        let Some(running) = &self.running_intent else {
+            return false;
+        };
+        let model = match running.receiver.try_recv() {
+            Ok(model) => model,
+            Err(mpsc::TryRecvError::Empty) => return false,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.running_intent = None;
+                return true;
+            }
+        };
+        let running = self.running_intent.take().expect("running intent exists");
+        let queued_during_run = self.model.take_pending_intents();
+        self.model = model;
+        self.model
+            .append_pending_intents(remove_running_intent(queued_during_run, &running.intent));
+        true
+    }
+}
+
+fn remove_running_intent(
+    mut intents: Vec<state::GuiActionIntent>,
+    running: &state::GuiActionIntent,
+) -> Vec<state::GuiActionIntent> {
+    if let Some(index) = intents.iter().position(|intent| intent == running) {
+        intents.remove(index);
+    }
+    intents
 }
 
 fn apply_dark_theme(ctx: &egui::Context, colors: UiColors) {
