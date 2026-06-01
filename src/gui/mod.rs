@@ -109,7 +109,7 @@ impl SkillAction {
             Self::Disable => "Disable",
             Self::Scan => "Scan",
             Self::Deploy => "Deploy",
-            Self::Uninstall => "Uninstall",
+            Self::Uninstall => "Uninstall managed copy",
         }
     }
 }
@@ -353,7 +353,7 @@ impl eframe::App for SkillKitsGuiApp {
                     if ui
                         .selectable_label(
                             matches!(self.model.active_scope, GuiScope::GlobalInventory),
-                            "Global Inventory",
+                            "Managed Inventory",
                         )
                         .clicked()
                     {
@@ -706,7 +706,7 @@ fn render_skill_action_button(
             model.begin_install_local_skill();
         }
         SkillAction::ScanAgentSpaces => {
-            let _ = model.request_adopt_all_agent_skills();
+            let _ = model.request_scan_agent_spaces();
         }
         SkillAction::ImportManagedCopy => {
             let _ = model.request_import_selected_skill_instance_as_managed_copy();
@@ -908,7 +908,7 @@ fn render_project_action_button(
 
 fn scope_label(scope: &GuiScope) -> String {
     match scope {
-        GuiScope::GlobalInventory => "Global Inventory".to_string(),
+        GuiScope::GlobalInventory => "Managed Inventory".to_string(),
         GuiScope::Project(path) => path
             .file_name()
             .map(ToString::to_string)

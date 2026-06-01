@@ -69,7 +69,7 @@ fn inspector_sections(model: &GuiModel) -> Vec<InspectorSection> {
             title: "Empty".to_string(),
             lines: vec![
                 "No Agent Space Skills found.".to_string(),
-                "Scan enabled Agent directories or install a managed source.".to_string(),
+                "Scan enabled Agent directories or install a local managed source.".to_string(),
             ],
         }];
     };
@@ -121,6 +121,8 @@ fn inspector_sections(model: &GuiModel) -> Vec<InspectorSection> {
             lines: vec![
                 "Scan Agent Spaces refreshes the Agent-visible Skill read model.".to_string(),
                 "Install local copies a local Skill into Managed Inventory.".to_string(),
+                "Import managed copy copies this Agent Space Skill into Managed Inventory."
+                    .to_string(),
                 "Deploy to Project copies a managed Skill into a project Agent Space.".to_string(),
             ],
         },

@@ -53,7 +53,13 @@ pub fn renderable(model: &GuiModel) -> RenderableView {
         inspector_sections: vec![
             InspectorSection {
                 title: "Scope".to_string(),
-                lines: vec!["Global Inventory".to_string()],
+                lines: vec![
+                    format!(
+                        "Agent Space instances {}",
+                        summary.agent_space_instance_count
+                    ),
+                    format!("Managed Inventory copies {}", summary.managed_skill_count),
+                ],
             },
             InspectorSection {
                 title: "Recent Projects".to_string(),

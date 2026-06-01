@@ -40,7 +40,7 @@ use egui::Color32;
 pub const DRIFT_REMOVE_CONFIRMATION_MESSAGE: &str =
     "This project copy has local changes. Removing it deletes only this deployed Skill, not the Agent skill root.";
 pub const GLOBAL_UNINSTALL_CONFIRMATION_MESSAGE: &str =
-    "Uninstall removes this Skill from Global Inventory. Source files and project deployments are not deleted.";
+    "Uninstall removes this managed copy from Managed Inventory. Agent Space copies are not deleted.";
 pub const SKILL_INSTANCE_DISABLE_CONFIRMATION_MESSAGE: &str =
     "Disable changes SKILL.md to SKILL.md.disabled in the Agent Space. It does not delete the Skill directory.";
 
@@ -76,7 +76,8 @@ pub enum GuiActionIntent {
     InstallLocalSkill {
         source_path: Utf8PathBuf,
     },
-    AdoptAllAgentSkills,
+    ScanAgentSpaces,
+    ImportAllManagedCopies,
     ImportManagedCopy {
         instance_id: String,
     },
@@ -165,6 +166,9 @@ pub struct GuiController {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum GuiControllerOutcome {
     None,
+    AgentSpacesScanned {
+        instances: usize,
+    },
     AgentSkillsAdopted {
         imported: usize,
         conflicts: usize,
@@ -316,7 +320,12 @@ impl GuiController {
                     findings: result.risk_findings,
                 }
             }
-            GuiActionIntent::AdoptAllAgentSkills => {
+            GuiActionIntent::ScanAgentSpaces => {
+                let home = self.home_dir.clone().map_or_else(default_home_dir, Ok)?;
+                let instances = scan_agent_spaces(&self.paths, &home)?.len();
+                GuiControllerOutcome::AgentSpacesScanned { instances }
+            }
+            GuiActionIntent::ImportAllManagedCopies => {
                 let home = self.home_dir.clone().map_or_else(default_home_dir, Ok)?;
                 let config = read_config(&self.paths)?;
                 let mut imported = 0;
@@ -1188,8 +1197,12 @@ impl GuiModel {
         })
     }
 
-    pub fn request_adopt_all_agent_skills(&mut self) -> Option<GuiActionIntent> {
-        self.push_intent(GuiActionIntent::AdoptAllAgentSkills)
+    pub fn request_import_all_agent_skills_as_managed_copies(&mut self) -> Option<GuiActionIntent> {
+        self.push_intent(GuiActionIntent::ImportAllManagedCopies)
+    }
+
+    pub fn request_scan_agent_spaces(&mut self) -> Option<GuiActionIntent> {
+        self.push_intent(GuiActionIntent::ScanAgentSpaces)
     }
 
     pub fn request_import_selected_skill_instance_as_managed_copy(
@@ -1765,7 +1778,16 @@ impl GuiModel {
                 };
                 format!("Installed {skill_name}: {summary}.")
             }
-            GuiActionIntent::AdoptAllAgentSkills => match outcome {
+            GuiActionIntent::ScanAgentSpaces => match outcome {
+                GuiControllerOutcome::AgentSpacesScanned { instances } => {
+                    format!(
+                        "Scanned Agent Spaces: {instances} instance{}.",
+                        if *instances == 1 { "" } else { "s" }
+                    )
+                }
+                _ => "Scanned Agent Spaces.".to_string(),
+            },
+            GuiActionIntent::ImportAllManagedCopies => match outcome {
                 GuiControllerOutcome::AgentSkillsAdopted {
                     imported,
                     conflicts,
@@ -1780,11 +1802,11 @@ impl GuiModel {
                         )
                     };
                     format!(
-                        "Adopted Agent Skills into Global Inventory: {imported} imported, {conflicts} conflict{}{failure_summary}.",
+                        "Imported Agent Skills into Managed Inventory: {imported} imported, {conflicts} conflict{}{failure_summary}.",
                         if *conflicts == 1 { "" } else { "s" },
                     )
                 }
-                _ => "Adopted Agent Skills into Global Inventory.".to_string(),
+                _ => "Imported Agent Skills into Managed Inventory.".to_string(),
             },
             GuiActionIntent::ImportManagedCopy { instance_id } => {
                 let skill_name = self
@@ -1819,7 +1841,7 @@ impl GuiModel {
                     .find(|skill| skill.id == *skill_id)
                     .map(|skill| skill.name.as_str())
                     .unwrap_or_else(|| skill_id.as_str());
-                format!("Uninstalled {skill_name} from Global Inventory.")
+                format!("Uninstalled managed copy {skill_name} from Managed Inventory.")
             }
             GuiActionIntent::DeploySkill {
                 project_path,
@@ -1985,7 +2007,9 @@ impl GuiModel {
 
     fn apply_controller_outcome(&mut self, outcome: GuiControllerOutcome) {
         match outcome {
-            GuiControllerOutcome::None | GuiControllerOutcome::AgentSkillsAdopted { .. } => {}
+            GuiControllerOutcome::None
+            | GuiControllerOutcome::AgentSpacesScanned { .. }
+            | GuiControllerOutcome::AgentSkillsAdopted { .. } => {}
             GuiControllerOutcome::SkillInstalled {
                 skill_id,
                 scanned_hash,
@@ -2251,7 +2275,8 @@ impl Default for GuiModel {
 fn action_label(intent: &GuiActionIntent) -> &'static str {
     match intent {
         GuiActionIntent::InstallLocalSkill { .. } => "Install local Skill",
-        GuiActionIntent::AdoptAllAgentSkills => "Scan Agent Spaces",
+        GuiActionIntent::ScanAgentSpaces => "Scan Agent Spaces",
+        GuiActionIntent::ImportAllManagedCopies => "Import all managed copies",
         GuiActionIntent::ImportManagedCopy { .. } => "Import managed copy",
         GuiActionIntent::ScanSkill { .. } => "Scan",
         GuiActionIntent::UninstallSkill { .. } => "Uninstall",

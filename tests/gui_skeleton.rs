@@ -809,6 +809,18 @@ fn dashboard_renders_core_health_and_risk_status() {
     assert!(model.dashboard.risk_count > 0);
 
     let renderable = model.renderable_view();
+    let scope = renderable
+        .inspector_sections
+        .iter()
+        .find(|section| section.title == "Scope")
+        .expect("missing Scope inspector section");
+    assert_eq!(
+        scope.lines,
+        vec![
+            "Agent Space instances 0".to_string(),
+            "Managed Inventory copies 1".to_string(),
+        ]
+    );
     let health = renderable
         .inspector_sections
         .iter()
@@ -1007,14 +1019,14 @@ fn gui_empty_states_are_contextual_and_actionable() {
         vec![SkillAction::InstallLocal, SkillAction::ScanAgentSpaces]
     );
     assert_eq!(
-        model.request_adopt_all_agent_skills(),
-        Some(GuiActionIntent::AdoptAllAgentSkills)
+        model.request_scan_agent_spaces(),
+        Some(GuiActionIntent::ScanAgentSpaces)
     );
     assert_eq!(
         section_lines(&model, "Empty"),
         vec![
             "No Agent Space Skills found.".to_string(),
-            "Scan enabled Agent directories or install a managed source.".to_string(),
+            "Scan enabled Agent directories or install a local managed source.".to_string(),
         ]
     );
 
@@ -1031,6 +1043,62 @@ fn gui_empty_states_are_contextual_and_actionable() {
             "No Recent Project is selected.".to_string(),
             "Open a project from the Scope switcher before scanning or deploying.".to_string(),
         ]
+    );
+}
+
+#[test]
+fn scan_agent_spaces_refreshes_instances_without_importing_managed_copies() {
+    let temp_dir = TempDir::new().unwrap();
+    let paths = test_paths(&temp_dir);
+    ensure_app_dirs(&paths).unwrap();
+    write_config(&paths, &Config::default()).unwrap();
+    write_skills_registry(&paths, &SkillsRegistry::default()).unwrap();
+    write_deployments_registry(&paths, &DeploymentsRegistry::default()).unwrap();
+
+    let home = Utf8PathBuf::from_path_buf(temp_dir.path().to_path_buf()).unwrap();
+    let mut model = GuiModel::load_with_home_dir(&paths, home.clone()).unwrap();
+    model.navigate(NavigationView::Skills);
+    assert_eq!(
+        skill_actions(&model),
+        vec![SkillAction::InstallLocal, SkillAction::ScanAgentSpaces]
+    );
+
+    write_global_codex_skill(&temp_dir, "late-agent-skill", "# Late Agent Skill\n");
+    assert_eq!(
+        model.request_scan_agent_spaces(),
+        Some(GuiActionIntent::ScanAgentSpaces)
+    );
+    let controller = GuiController::with_home_dir(paths.clone(), home);
+    assert!(model.execute_next_intent(&controller).unwrap().is_some());
+
+    assert_eq!(model.skill_instances.len(), 1);
+    assert_eq!(model.skill_instances[0].name, "Late Agent Skill");
+    assert!(model.skills.is_empty());
+    assert!(read_skills_registry(&paths).unwrap().skills.is_empty());
+    assert_eq!(
+        model.last_status().unwrap().message,
+        "Scanned Agent Spaces: 1 instance."
+    );
+}
+
+#[test]
+fn import_all_managed_copies_is_explicitly_named_when_used() {
+    let temp_dir = TempDir::new().unwrap();
+    let paths = test_paths(&temp_dir);
+    ensure_app_dirs(&paths).unwrap();
+    write_config(&paths, &Config::default()).unwrap();
+    write_skills_registry(&paths, &SkillsRegistry::default()).unwrap();
+    write_deployments_registry(&paths, &DeploymentsRegistry::default()).unwrap();
+
+    let mut model = GuiModel::load(&paths).unwrap();
+
+    assert_eq!(
+        model.request_import_all_agent_skills_as_managed_copies(),
+        Some(GuiActionIntent::ImportAllManagedCopies)
+    );
+    assert_eq!(
+        model.pending_action_status_label(),
+        "Next: Import all managed copies (1 queued)"
     );
 }
 
@@ -1097,8 +1165,8 @@ fn gui_adopt_all_agent_skills_imports_from_all_enabled_global_agent_dirs() {
 
     let mut model = GuiModel::load(&paths).unwrap();
     assert_eq!(
-        model.request_adopt_all_agent_skills(),
-        Some(GuiActionIntent::AdoptAllAgentSkills)
+        model.request_import_all_agent_skills_as_managed_copies(),
+        Some(GuiActionIntent::ImportAllManagedCopies)
     );
     let controller = GuiController::with_home_dir(paths.clone(), home);
     assert!(model.execute_next_intent(&controller).unwrap().is_some());
@@ -1128,7 +1196,7 @@ fn gui_adopt_all_agent_skills_imports_from_all_enabled_global_agent_dirs() {
     assert!(custom_global.join("custom-one/SKILL.md").exists());
     assert_eq!(
         model.last_status().unwrap().message,
-        "Adopted Agent Skills into Global Inventory: 2 imported, 1 conflict."
+        "Imported Agent Skills into Managed Inventory: 2 imported, 1 conflict."
     );
 }
 
@@ -1170,7 +1238,9 @@ fn gui_adopt_all_agent_skills_recursively_imports_codex_skill_libraries() {
     write_deployments_registry(&paths, &DeploymentsRegistry::default()).unwrap();
 
     let mut model = GuiModel::load(&paths).unwrap();
-    model.request_adopt_all_agent_skills().unwrap();
+    model
+        .request_import_all_agent_skills_as_managed_copies()
+        .unwrap();
     let controller = GuiController::with_home_dir(paths, home);
 
     assert!(model.execute_next_intent(&controller).unwrap().is_some());
@@ -1184,7 +1254,7 @@ fn gui_adopt_all_agent_skills_recursively_imports_codex_skill_libraries() {
     );
     assert_eq!(
         model.last_status().unwrap().message,
-        "Adopted Agent Skills into Global Inventory: 2 imported, 0 conflicts."
+        "Imported Agent Skills into Managed Inventory: 2 imported, 0 conflicts."
     );
 }
 
@@ -1212,14 +1282,16 @@ fn gui_adopt_all_agent_skills_skips_enabled_agents_without_global_dirs() {
     write_deployments_registry(&paths, &DeploymentsRegistry::default()).unwrap();
 
     let mut model = GuiModel::load(&paths).unwrap();
-    model.request_adopt_all_agent_skills().unwrap();
+    model
+        .request_import_all_agent_skills_as_managed_copies()
+        .unwrap();
     let controller = GuiController::with_home_dir(paths, project_path(&temp_dir, "home"));
 
     assert!(model.execute_next_intent(&controller).unwrap().is_some());
     assert!(model.skills.is_empty());
     assert_eq!(
         model.last_status().unwrap().message,
-        "Adopted Agent Skills into Global Inventory: 0 imported, 0 conflicts."
+        "Imported Agent Skills into Managed Inventory: 0 imported, 0 conflicts."
     );
 }
 
@@ -1255,7 +1327,9 @@ fn gui_adopt_all_agent_skills_reloads_partial_imports_when_later_agent_fails() {
     write_deployments_registry(&paths, &DeploymentsRegistry::default()).unwrap();
 
     let mut model = GuiModel::load(&paths).unwrap();
-    model.request_adopt_all_agent_skills().unwrap();
+    model
+        .request_import_all_agent_skills_as_managed_copies()
+        .unwrap();
     let controller = GuiController::with_home_dir(paths, project_path(&temp_dir, "home"));
 
     assert!(model.execute_next_intent(&controller).unwrap().is_some());
@@ -1270,7 +1344,7 @@ fn gui_adopt_all_agent_skills_reloads_partial_imports_when_later_agent_fails() {
     assert_eq!(model.last_status().unwrap().kind, GuiStatusKind::Error);
     assert_eq!(
         model.last_status().unwrap().message,
-        "Adopted Agent Skills into Global Inventory: 1 imported, 0 conflicts, 1 failure."
+        "Imported Agent Skills into Managed Inventory: 1 imported, 0 conflicts, 1 failure."
     );
 }
 
