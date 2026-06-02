@@ -1,0 +1,3 @@
+# Agent Space is the Skill enablement truth
+
+Skill-kits will manage Skills in the directories Agents actually read from, instead of treating the TOML Registry or Managed Inventory as the source of enablement truth. `SKILL.md` means enabled and `SKILL.md.disabled` means disabled; scans build an Agent Space read model without writing Registry state, while Managed Inventory remains an explicit install/deploy source. This replaces the managed-inventory-first mental model because Registry-only disable cannot stop Codex, Claude, or Gemini from reading a Skill that still exists in their native Skill directories.

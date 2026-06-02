@@ -1,4 +1,5 @@
 pub mod adopt;
+pub mod agent_space;
 pub mod agents;
 pub mod config;
 pub mod doctor;

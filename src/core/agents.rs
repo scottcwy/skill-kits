@@ -53,7 +53,7 @@ pub trait AgentAdapter {
 pub struct BuiltInAgent {
     pub id: &'static str,
     pub label: &'static str,
-    pub global_dir: &'static str,
+    pub global_dirs: &'static [&'static str],
     pub project_dir: &'static str,
 }
 
@@ -67,7 +67,7 @@ impl AgentAdapter for BuiltInAgent {
     }
 
     fn default_global_skill_dirs(&self) -> Vec<Utf8PathBuf> {
-        vec![self.global_dir.into()]
+        self.global_dirs.iter().map(|dir| (*dir).into()).collect()
     }
 
     fn default_project_skill_dirs(&self) -> Vec<Utf8PathBuf> {
@@ -80,19 +80,23 @@ pub fn built_in_agents() -> Vec<BuiltInAgent> {
         BuiltInAgent {
             id: "codex",
             label: "Codex",
-            global_dir: "~/.codex/skills",
+            global_dirs: &[
+                "~/.codex/skills",
+                "~/.codex/plugins/cache",
+                "~/.codex/vendor_imports",
+            ],
             project_dir: ".agents/skills",
         },
         BuiltInAgent {
             id: "claude",
             label: "Claude Code",
-            global_dir: "~/.claude/skills",
+            global_dirs: &["~/.claude/skills"],
             project_dir: ".claude/skills",
         },
         BuiltInAgent {
             id: "gemini",
             label: "Gemini CLI",
-            global_dir: "~/.gemini/skills",
+            global_dirs: &["~/.gemini/skills"],
             project_dir: ".gemini/skills",
         },
     ]
@@ -105,7 +109,7 @@ pub fn default_agent_configs() -> Vec<AgentConfig> {
             id: AgentId::new(agent.id),
             label: agent.label.to_string(),
             kind: AgentKind::BuiltIn,
-            global_skill_dirs: vec![agent.global_dir.into()],
+            global_skill_dirs: agent.default_global_skill_dirs(),
             project_skill_dirs: vec![agent.project_dir.into()],
             enabled: true,
         })
@@ -147,6 +151,40 @@ pub fn configured_project_skill_dirs_for(
 
 pub fn global_skill_dirs_for(agent_id: &AgentId) -> Option<Vec<Utf8PathBuf>> {
     built_in_agent_config(agent_id).map(|agent| agent.global_skill_dirs)
+}
+
+pub fn configured_global_skill_dirs_for(
+    paths: &AppPaths,
+    agent_id: &AgentId,
+) -> Result<Vec<Utf8PathBuf>> {
+    let config = read_config(paths)?;
+    if let Some(agent) = config
+        .agents
+        .into_iter()
+        .find(|agent| agent.id == *agent_id)
+    {
+        let defaults = global_skill_dirs_for(agent_id).unwrap_or_default();
+        return if agent.global_skill_dirs.is_empty() {
+            Ok(defaults)
+        } else if matches!(agent.kind, AgentKind::BuiltIn) {
+            Ok(merge_dirs(agent.global_skill_dirs, defaults))
+        } else {
+            Ok(agent.global_skill_dirs)
+        };
+    }
+
+    global_skill_dirs_for(agent_id).ok_or_else(|| SkillKitsError::AgentNotFound {
+        agent_id: agent_id.clone(),
+    })
+}
+
+fn merge_dirs(mut primary: Vec<Utf8PathBuf>, secondary: Vec<Utf8PathBuf>) -> Vec<Utf8PathBuf> {
+    for dir in secondary {
+        if !primary.contains(&dir) {
+            primary.push(dir);
+        }
+    }
+    primary
 }
 
 pub fn add_custom_agent_config(
@@ -197,6 +235,50 @@ pub fn update_agent_project_skill_dirs(
 
         agent.project_skill_dirs = project_skill_dirs;
         Ok(agent.clone())
+    })
+}
+
+pub fn reset_agent_project_skill_dirs(paths: &AppPaths, agent_id: &AgentId) -> Result<AgentConfig> {
+    let default_agent =
+        built_in_agent_config(agent_id).ok_or_else(|| SkillKitsError::InvalidAgentConfig {
+            reason: format!("{agent_id} is not a built-in Agent"),
+        })?;
+
+    update_config(paths, |config| {
+        let agent = config
+            .agents
+            .iter_mut()
+            .find(|agent| agent.id == *agent_id)
+            .ok_or_else(|| SkillKitsError::AgentNotFound {
+                agent_id: agent_id.clone(),
+            })?;
+        if agent.kind != AgentKind::BuiltIn {
+            return Err(SkillKitsError::InvalidAgentConfig {
+                reason: format!("{agent_id} is not a built-in Agent"),
+            });
+        }
+
+        agent.project_skill_dirs = default_agent.project_skill_dirs;
+        Ok(agent.clone())
+    })
+}
+
+pub fn remove_custom_agent_config(paths: &AppPaths, agent_id: &AgentId) -> Result<AgentConfig> {
+    update_config(paths, |config| {
+        let index = config
+            .agents
+            .iter()
+            .position(|agent| agent.id == *agent_id)
+            .ok_or_else(|| SkillKitsError::AgentNotFound {
+                agent_id: agent_id.clone(),
+            })?;
+        if config.agents[index].kind != AgentKind::Custom {
+            return Err(SkillKitsError::InvalidAgentConfig {
+                reason: format!("{agent_id} is not a custom Agent"),
+            });
+        }
+
+        Ok(config.agents.remove(index))
     })
 }
 

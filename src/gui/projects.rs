@@ -2,12 +2,12 @@ use crate::core::registry::{DeploymentStatus, ToggleState};
 use crate::gui::state::{GuiModel, InspectorSection, RenderRow, RenderableView};
 
 pub fn view_name() -> &'static str {
-    "Projects"
+    "Project"
 }
 
 pub fn renderable(model: &GuiModel) -> RenderableView {
     let selected_project = model.scope_project_path();
-    let main_rows: Vec<_> = model
+    let mut main_rows: Vec<_> = model
         .deployment_statuses
         .iter()
         .filter(|status| {
@@ -25,11 +25,26 @@ pub fn renderable(model: &GuiModel) -> RenderableView {
                 outdated_label(status),
                 drift_label(status),
                 missing_source_label(status),
-                "Not scanned".to_string(),
+                risk_label(model, status),
                 status.record.deployment_path.to_string(),
             ],
         })
         .collect();
+    if let Some(project) = model.selected_project_summary() {
+        main_rows.extend(project.discovered_skills.iter().map(|skill| RenderRow {
+            id: format!("discovered:{}:{}", skill.agent_id, skill.name),
+            cells: vec![
+                skill.name.clone(),
+                skill.agent_id.to_string(),
+                "Discovered".to_string(),
+                toggle_label(&skill.toggle),
+                "-".to_string(),
+                "-".to_string(),
+                "Not managed".to_string(),
+                skill.path.to_string(),
+            ],
+        }));
+    }
     let empty_message = if main_rows.is_empty() {
         Some(
             "No project deployments in this scope. Refresh a project, adopt existing Skills, or deploy a managed Skill.",
@@ -81,6 +96,26 @@ fn inspector_sections(model: &GuiModel) -> Vec<InspectorSection> {
     }
 
     if let Some(project) = model.selected_project_summary() {
+        if let Some(skill) = model.selected_discovered_project_skill() {
+            return vec![
+                InspectorSection {
+                    title: "Discovered Skill".to_string(),
+                    lines: vec![
+                        skill.name.clone(),
+                        format!("Agent {}", skill.agent_id),
+                        format!("Toggle {}", toggle_label(&skill.toggle)),
+                        skill.path.to_string(),
+                    ],
+                },
+                InspectorSection {
+                    title: "Actions".to_string(),
+                    lines: vec![
+                        "Adopt selected imports only this project Skill.".to_string(),
+                        "Adopt all imports all non-conflicting discovered Skills.".to_string(),
+                    ],
+                },
+            ];
+        }
         return vec![
             InspectorSection {
                 title: "Project".to_string(),
@@ -105,8 +140,7 @@ fn inspector_sections(model: &GuiModel) -> Vec<InspectorSection> {
         title: "Empty".to_string(),
         lines: vec![
             "No Recent Project is selected.".to_string(),
-            "Use the Scope switcher or refresh the current project to start onboarding."
-                .to_string(),
+            "Open a project from the Scope switcher before scanning or deploying.".to_string(),
         ],
     }]
 }
@@ -129,19 +163,36 @@ fn onboarding_lines(project: &crate::gui::state::ProjectSummary) -> Vec<String> 
                 "{} discovered project Skill(s) are available to adopt.",
                 project.discovered_unmanaged_count
             ),
-            "Adopt all emits a GUI intent; no Skill is adopted automatically.".to_string(),
+            "Select a discovered Skill to adopt it individually, or adopt all non-conflicting Skills."
+                .to_string(),
         ]);
+        lines.extend(project.discovered_skills.iter().map(|skill| {
+            format!(
+                "{}/{} - {}",
+                skill.agent_id,
+                skill.name,
+                toggle_label(&skill.toggle)
+            )
+        }));
         if !project.pending_conflicts.is_empty() {
             lines.push("Conflicts remain: import as new or skip.".to_string());
         }
         return lines;
     }
 
-    lines.extend([
-        "No startup project scan has run.".to_string(),
-        "Refresh scans this project for existing Agent Skills without adopting automatically."
-            .to_string(),
-    ]);
+    if project.onboarding_scanned {
+        lines.extend([
+            "No unmanaged project Skills were found.".to_string(),
+            "Deploy a managed Skill to this project, or add an Agent Skill directory and Refresh."
+                .to_string(),
+        ]);
+    } else {
+        lines.extend([
+            "Project has not been scanned in this GUI session.".to_string(),
+            "Refresh scans this project for existing Agent Skills without adopting automatically."
+                .to_string(),
+        ]);
+    }
     lines
 }
 
@@ -158,6 +209,13 @@ fn deploy_target_lines(model: &GuiModel) -> Vec<String> {
 }
 
 fn action_lines(status: &DeploymentStatus) -> Vec<String> {
+    if is_invalid_toggle(status) {
+        return vec![
+            "Invalid toggle state blocks deployment actions.".to_string(),
+            "Keep exactly one of SKILL.md or SKILL.md.disabled, then Refresh.".to_string(),
+        ];
+    }
+
     if status.missing_managed_source {
         return vec!["Available actions: Promote to managed, Remove from project.".to_string()];
     }
@@ -168,6 +226,13 @@ fn action_lines(status: &DeploymentStatus) -> Vec<String> {
             .to_string(),
         "Remove deletes only this deployed Skill, not the Agent skill root.".to_string(),
     ]
+}
+
+pub fn is_invalid_toggle(status: &DeploymentStatus) -> bool {
+    matches!(
+        status.toggle,
+        ToggleState::InvalidBothPresent | ToggleState::InvalidBothMissing
+    )
 }
 
 fn toggle_label(toggle: &ToggleState) -> String {
@@ -200,4 +265,11 @@ fn missing_source_label(status: &DeploymentStatus) -> String {
     } else {
         "No".to_string()
     }
+}
+
+fn risk_label(model: &GuiModel, status: &DeploymentStatus) -> String {
+    model
+        .skill_risk_report(&status.record.skill_id)
+        .map(crate::gui::state::GuiRiskReport::summary_label)
+        .unwrap_or_else(|| "Not scanned".to_string())
 }

@@ -1,0 +1,31 @@
+version = 1
+theme = "system"
+
+[[agents]]
+id = "codex"
+label = "Codex"
+kind = "built_in"
+global_skill_dirs = ["~/.codex/skills"]
+project_skill_dirs = [".agents/skills"]
+enabled = true
+
+[[agents]]
+id = "claude"
+label = "Claude Code"
+kind = "built_in"
+global_skill_dirs = ["~/.claude/skills"]
+project_skill_dirs = [".claude/skills"]
+enabled = true
+
+[[agents]]
+id = "gemini"
+label = "Gemini CLI"
+kind = "built_in"
+global_skill_dirs = ["~/.gemini/skills"]
+project_skill_dirs = [".gemini/skills"]
+enabled = true
+
+[[recent_projects]]
+name = "skill-kits-smoke-project"
+path = "/tmp/skill-kits-smoke-project"
+last_opened_at = "2026-06-01T00:00:00Z"

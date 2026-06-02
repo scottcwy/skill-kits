@@ -29,7 +29,11 @@ pub fn validate_skill_dir(skill_dir: &Utf8Path) -> Result<()> {
 }
 
 pub fn load_skill_metadata(skill_dir: &Utf8Path) -> Result<Option<SkillMetadata>> {
-    let contents = std::fs::read_to_string(skill_markdown_path(skill_dir))?;
+    load_skill_metadata_from_file(&skill_markdown_path(skill_dir))
+}
+
+pub fn load_skill_metadata_from_file(skill_file: &Utf8Path) -> Result<Option<SkillMetadata>> {
+    let contents = std::fs::read_to_string(skill_file)?;
     Ok(parse_skill_metadata(&contents))
 }
 

@@ -4,12 +4,15 @@
 
 Skill-kits is a single-binary, local-first AI Agent Skills manager. It keeps a global inventory of managed Skills, then deploys selected Skills into project-scoped Agent skill directories.
 
+Update: `AGENT-SPACE-MANAGEMENT-SPEC.md` supersedes the managed-inventory-first parts of this v0.1 PRD. The active model is Agent Space first: Skill-kits scans and manages the directories Agents actually read from, and Managed Inventory is an install/deploy source rather than the enablement truth.
+
 Core principles:
 
 - Single binary first.
 - No Electron, WebView, Node, or Python runtime.
 - CLI and GUI share the same Rust core.
-- Global inventory is separate from project deployments.
+- Agent Space filesystem state is the enablement truth.
+- Managed Inventory is separate from Agent Space instances and project deployments.
 - Project-level enablement uses native Agent project directories.
 - v0.1 is offline-first: local install and adopt only.
 
@@ -18,6 +21,7 @@ Core principles:
 In scope:
 
 - Global Inventory under `~/.skill-kits/skills/`.
+- Agent Space scan read model for configured global Agent directories and Recent Projects.
 - Local Skill install from a directory.
 - Adopt from global Agent skill directories.
 - Adopt from project Agent skill directories.
@@ -26,7 +30,7 @@ In scope:
 - Drift, outdated, invalid toggle, and conflict detection.
 - Advisory security scan.
 - Lightweight doctor checks and low-risk `doctor --fix`.
-- egui GUI with Dashboard, Skills, Agents, and Projects views.
+- egui GUI with Dashboard, Skill, Agent, and Project views.
 - macOS single binary first.
 
 Out of scope for v0.1:
@@ -50,7 +54,7 @@ Built-in project skill directories:
 | Claude Code | `<project>/.claude/skills` |
 | Gemini CLI | `<project>/.gemini/skills` |
 
-Read-only global adopt directories:
+Agent Space global directories:
 
 | Agent | Global Skill Directory |
 | --- | --- |
@@ -59,6 +63,8 @@ Read-only global adopt directories:
 | Gemini CLI | `~/.gemini/skills` |
 
 Custom Agents can define project skill directories in config. v0.1 only supports project-level enablement for Agents with native project skill directories.
+
+Codex defaults must not include `~/.skills-manager/skills` as an Agent Space directory. Plugin/cache/vendor directories may be shown as read-only Agent-visible sources when configured by the Agent adapter.
 
 ## Data Model
 
@@ -77,6 +83,8 @@ Global data lives under `~/.skill-kits/`:
 ```
 
 Registry and config state are TOML. All writes to `config.toml`, `skills.toml`, and `deployments.toml` take `state.lock` and write through temp file plus atomic rename.
+
+Agent Space scans do not write Registry state. Registry can support Managed Inventory, known deployments, recovery, and summaries, but it is not the enablement source of truth.
 
 Each Managed Skill has a stable `skill_id`; display name comes from the imported directory name. `SKILL.md` frontmatter or heading is optional metadata only.
 
@@ -124,7 +132,7 @@ If a project deployment has a missing managed source, the Projects view shows `M
 
 ## Adopt
 
-Adopt imports existing Skills into Global Inventory.
+Adopt imports existing Skills into Global Inventory in legacy v0.1 flows. New Agent Space UI language should prefer `Scan Agent Spaces` for read-only refreshes and `Import managed copy` for explicit copy into Managed Inventory.
 
 Commands:
 
@@ -211,19 +219,19 @@ Policy enforcement is future work.
 Navigation order:
 
 1. Dashboard
-2. Skills
-3. Agents
-4. Projects
+2. Skill
+3. Agent
+4. Project
 
-Dashboard opens to Global Inventory by default and includes a Scope Switcher for Recent Projects.
+Dashboard opens by default and leads with Agent Space instance counts plus Managed Inventory summary.
 
-Skills view handles global inventory list, details, risk panel, and uninstall.
+Skill view handles Agent Space Skill Instance rows, status, paths, risk panel, enable/disable, and explicit managed-copy actions.
 
-Agents view handles Codex, Claude Code, Gemini CLI, and Custom Agent project directory configuration.
+Agent view handles Codex, Claude Code, Gemini CLI, and Custom Agent project directory configuration.
 
-Projects view handles Recent Projects, onboarding scan, deployments, enable, disable, remove, redeploy, drift, outdated state, missing managed source, and invalid toggle state.
+Project view handles Recent Projects, onboarding scan, deployments, enable, disable, remove, redeploy, drift, outdated state, missing managed source, and invalid toggle state.
 
-GUI startup reads registry, config, and Recent Project summaries only. It does not recursively scan all Recent Projects. Full project scan happens on first project onboarding or explicit refresh.
+GUI startup reads registry, config, and Recent Project summaries, then builds the Agent Space read model from configured global directories and Recent Projects. It does not run workspace-wide project discovery; HarnessKit-style `Discover Projects(root)` is deferred to later GUI productization.
 
 Skill-kits may show Git ignore guidance, but v0.1 does not edit `.gitignore` automatically and does not force a commit-or-ignore recommendation. The GUI ships dark theme only in v0.1 and uses platform system fonts without bundling custom fonts.
 

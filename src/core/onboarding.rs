@@ -102,7 +102,7 @@ pub fn project_onboarding_scan(
     })
 }
 
-fn record_recent_project(app_paths: &AppPaths, project_path: &Utf8Path) -> Result<()> {
+pub(crate) fn record_recent_project(app_paths: &AppPaths, project_path: &Utf8Path) -> Result<()> {
     let project_name = project_path
         .file_name()
         .map(ToOwned::to_owned)

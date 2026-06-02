@@ -16,7 +16,8 @@ This is not a marketing canvas. The GUI should borrow Linear's product qualities
 
 A developer opens Skill-kits on macOS to answer concrete questions:
 
-- Which Skills are in my global inventory?
+- Which Skills are actually visible in Agent Space?
+- Which managed copies are available as install/deploy sources?
 - Which project am I looking at?
 - Which Agent directories are configured?
 - Which Skills are deployed, disabled, outdated, drifted, or invalid?
@@ -308,33 +309,53 @@ Layout:
 
 Avoid large metric cards. Use rows and compact panels.
 
-### Skills
+### Skill
 
-Purpose: manage Global Inventory.
+Purpose: inspect and manage Agent Space Skill instances.
+
+The Skill view is instance-first in the Agent Space model: one row represents one physical Skill directory that an Agent can read, or one legacy missing record that points to a vanished directory. Managed Inventory is summarized separately and does not become an Agent Space row unless an Agent config explicitly declares that directory as agent-readable.
 
 Main table columns:
 
 - Skill
+- Agent
+- Scope
+- Status
 - Source
-- Risk
-- Project deployments
+- Managed
 - Updated
 
 Inspector:
 
-- Skill name and Skill ID.
-- Managed path.
-- Source path.
-- Metadata from `SKILL.md`.
+- Real Skill directory.
+- `SKILL.md` path.
+- `SKILL.md.disabled` path.
+- Agent and Scope.
+- Writable or read-only state.
+- Managed or unmanaged state.
+- Metadata from the active toggle file.
+- Content hash when available.
 - Risk findings.
-- Deployment references in Recent Projects.
-- Actions: scan, uninstall.
+- Deployment references in Recent Projects when available.
+- Actions: scan Agent Spaces, enable, disable, install local, import managed copy, deploy to project, uninstall managed copy.
 
-Uninstall copy:
+Status values:
 
-- `Uninstall removes this Skill from Global Inventory. Project copies are not deleted.`
+- Enabled
+- Disabled
+- Invalid
+- Missing
+- Read-only
 
-### Agents
+Disable copy:
+
+- `Disable changes SKILL.md to SKILL.md.disabled in the Agent Space. It does not delete the Skill directory.`
+
+Uninstall managed copy:
+
+- `Uninstall removes this managed copy from Managed Inventory. Agent Space copies are not deleted.`
+
+### Agent
 
 Purpose: configure Agent project skill directories.
 
@@ -361,7 +382,7 @@ Actions:
 
 Do not show global Agent sync settings.
 
-### Projects
+### Project
 
 Purpose: manage one Project Scope.
 
@@ -421,6 +442,8 @@ If target directory exists and is unmanaged:
 ### Enable and Disable
 
 Enable/disable only renames the toggle file.
+
+Enable and disable operate on the selected Skill instance only. They do not mutate Managed Inventory, do not write an enablement flag to Registry, and do not affect same-name copies in other Agents or Projects.
 
 Invalid toggle state:
 

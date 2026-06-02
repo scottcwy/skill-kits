@@ -2,7 +2,7 @@ use crate::core::agents::AgentKind;
 use crate::gui::state::{GuiModel, InspectorSection, RenderRow, RenderableView};
 
 pub fn view_name() -> &'static str {
-    "Agents"
+    "Agent"
 }
 
 pub fn renderable(model: &GuiModel) -> RenderableView {
@@ -104,6 +104,8 @@ fn inspector_sections(model: &GuiModel) -> Vec<InspectorSection> {
                 title: "Actions".to_string(),
                 lines: vec![
                     "Edit path updates this Agent project Skill directory.".to_string(),
+                    "Reset default restores built-in Agent project directories.".to_string(),
+                    "Remove custom deletes only the custom Agent config entry.".to_string(),
                     "Add custom creates a local config entry for another Agent.".to_string(),
                     "No global Agent sync settings in v0.1.".to_string(),
                 ],

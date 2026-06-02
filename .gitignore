@@ -1,4 +1,5 @@
 /target/
+/dist/
 /.playwright-mcp/
 .DS_Store
 *.tmp

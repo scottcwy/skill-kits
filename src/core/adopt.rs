@@ -1,5 +1,5 @@
 use crate::core::{
-    agents::{configured_project_skill_dirs_for, global_skill_dirs_for},
+    agents::{configured_global_skill_dirs_for, configured_project_skill_dirs_for},
     error::{Result, SkillKitsError},
     fs::{copy_dir_clean_source_to_empty_target, ensure_dir},
     hash::hash_skill_dir,
@@ -22,6 +22,13 @@ pub struct GlobalAgentAdoptRequest<'a> {
 }
 
 #[derive(Clone, Debug)]
+pub struct ImportManagedCopyRequest<'a> {
+    pub app_paths: &'a AppPaths,
+    pub agent_id: &'a AgentId,
+    pub source_path: &'a Utf8Path,
+}
+
+#[derive(Clone, Debug)]
 pub struct ProjectAdoptRequest<'a> {
     pub app_paths: &'a AppPaths,
     pub project_path: &'a Utf8Path,
@@ -35,11 +42,15 @@ pub struct AdoptReport {
     pub conflicts: usize,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResilientAdoptReport {
+    pub imported: usize,
+    pub conflicts: usize,
+    pub failures: usize,
+}
+
 pub fn global_agent_adopt(request: GlobalAgentAdoptRequest<'_>) -> Result<AdoptReport> {
-    let global_roots =
-        global_skill_dirs_for(request.agent_id).ok_or_else(|| SkillKitsError::AgentNotFound {
-            agent_id: request.agent_id.clone(),
-        })?;
+    let global_roots = configured_global_skill_dirs_for(request.app_paths, request.agent_id)?;
     let mut imported = 0;
     let mut conflicts = 0;
 
@@ -74,6 +85,133 @@ pub fn global_agent_adopt(request: GlobalAgentAdoptRequest<'_>) -> Result<AdoptR
         imported,
         conflicts,
     })
+}
+
+pub fn import_managed_copy(request: ImportManagedCopyRequest<'_>) -> Result<ManagedSkill> {
+    let skill_name = request
+        .source_path
+        .file_name()
+        .map(|name| name.to_string())
+        .unwrap_or_else(|| "skill".to_string());
+    match adopt_global_skill(
+        &GlobalAgentAdoptRequest {
+            app_paths: request.app_paths,
+            agent_id: request.agent_id,
+            home_dir: Utf8Path::new(""),
+        },
+        request.source_path,
+    )? {
+        GlobalAdoptOutcome::Imported | GlobalAdoptOutcome::Skipped => {
+            let skills = read_skills_registry(request.app_paths)?.skills;
+            let source_match = skills.iter().position(|skill| {
+                skill.name == skill_name
+                    && matches!(
+                        &skill.source,
+                        SkillSource::GlobalAgentAdopt { source_path, .. }
+                            if source_path == request.source_path
+                    )
+            });
+            let name_match = skills.iter().position(|skill| skill.name == skill_name);
+            source_match
+                .or(name_match)
+                .map(|index| skills[index].clone())
+                .ok_or(SkillKitsError::SkillNotFound { query: skill_name })
+        }
+        GlobalAdoptOutcome::Conflict => Err(SkillKitsError::AdoptionConflict { name: skill_name }),
+    }
+}
+
+pub fn global_agent_adopt_resilient(
+    request: GlobalAgentAdoptRequest<'_>,
+) -> Result<ResilientAdoptReport> {
+    let global_roots = configured_global_skill_dirs_for(request.app_paths, request.agent_id)?;
+    let mut imported = 0;
+    let mut conflicts = 0;
+    let mut failures = 0;
+    let mut visited = Vec::new();
+
+    for global_root in global_roots {
+        let global_root = expand_home(&global_root, request.home_dir);
+        if !global_root.exists() {
+            continue;
+        }
+        let (skill_dirs, root_failures) = discover_adoptable_skill_dirs(&global_root);
+        failures += root_failures;
+        for source_path in skill_dirs {
+            if visited.contains(&source_path) {
+                continue;
+            }
+            visited.push(source_path.clone());
+            match adopt_global_skill(&request, &source_path) {
+                Ok(GlobalAdoptOutcome::Imported) => imported += 1,
+                Ok(GlobalAdoptOutcome::Skipped) => {}
+                Ok(GlobalAdoptOutcome::Conflict) => conflicts += 1,
+                Err(_) => failures += 1,
+            }
+        }
+    }
+
+    Ok(ResilientAdoptReport {
+        imported,
+        conflicts,
+        failures,
+    })
+}
+
+fn discover_adoptable_skill_dirs(root: &Utf8Path) -> (Vec<Utf8PathBuf>, usize) {
+    let mut discovered = Vec::new();
+    let mut failures = 0;
+    discover_adoptable_skill_dirs_inner(root, &mut discovered, &mut failures);
+    discovered.sort();
+    discovered.dedup();
+    (discovered, failures)
+}
+
+fn discover_adoptable_skill_dirs_inner(
+    dir: &Utf8Path,
+    discovered: &mut Vec<Utf8PathBuf>,
+    failures: &mut usize,
+) {
+    if is_global_adoptable_skill_dir(dir) {
+        discovered.push(dir.to_path_buf());
+        return;
+    }
+
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => {
+            *failures += 1;
+            return;
+        }
+    };
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => {
+                *failures += 1;
+                continue;
+            }
+        };
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(_) => {
+                *failures += 1;
+                continue;
+            }
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        let child = match Utf8PathBuf::from_path_buf(entry.path()) {
+            Ok(child) => child,
+            Err(_) => {
+                *failures += 1;
+                continue;
+            }
+        };
+        discover_adoptable_skill_dirs_inner(&child, discovered, failures);
+    }
 }
 
 pub fn project_adopt(request: ProjectAdoptRequest<'_>) -> Result<AdoptReport> {

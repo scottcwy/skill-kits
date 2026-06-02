@@ -4,6 +4,8 @@
 
 This document turns `PRD-v0.1.md` into an implementation shape. It defines the Rust module boundaries, core data structures, TOML registry schema, command handlers, main workflows, error model, and test strategy for v0.1.
 
+Update: `AGENT-SPACE-MANAGEMENT-SPEC.md` supersedes the managed-inventory-first parts of this implementation design. Keep the existing project deployment and registry machinery, but add an Agent Space read model where filesystem toggle state is the enablement truth and Tranche 1 scans do not write `skills.toml`.
+
 The implementation should stay single-binary first. CLI and GUI must call the same core services rather than duplicating behavior.
 
 ## Architecture
@@ -107,7 +109,8 @@ Path handling rules:
 - Normalize paths before storing them in registry files.
 - Project commands default to current working directory.
 - `--project <path>` overrides the project command scope.
-- Never write to real global Agent skill directories in v0.1.
+- Agent Space toggle may write only by renaming the selected writable instance's `SKILL.md` / `SKILL.md.disabled`.
+- Do not write to plugin/cache/vendor roots by default.
 
 ## Core Types
 
@@ -195,6 +198,30 @@ pub struct DeploymentStatus {
     pub missing_managed_source: bool,
 }
 ```
+
+Agent Space adds a scan/render model:
+
+```rust
+pub struct SkillInstance {
+    pub id: String,
+    pub stable_id: Option<SkillId>,
+    pub name: String,
+    pub agent_id: AgentId,
+    pub scope: SkillInstanceScope,
+    pub skill_dir: Utf8PathBuf,
+    pub enabled_path: Utf8PathBuf,
+    pub disabled_path: Utf8PathBuf,
+    pub toggle_state: ToggleState,
+    pub source_kind: SkillInstanceSourceKind,
+    pub managed: bool,
+    pub writable: bool,
+    pub metadata: Option<SkillMetadata>,
+    pub content_hash: Option<String>,
+    pub updated_at: Option<String>,
+}
+```
+
+`SkillInstance.id` is derived from `agent_id + scope_key + canonical skill_dir path`, not from name or content hash.
 
 Time format can be RFC3339 strings in v0.1 to keep TOML and JSON output simple.
 
@@ -301,7 +328,8 @@ Content hash:
 
 - Hash the full Skill directory content.
 - Include relative file paths and file bytes.
-- Treat `SKILL.md` and `SKILL.md.disabled` as equivalent only when computing project deployment drift, not when hashing a Managed Skill.
+- Treat `SKILL.md` and `SKILL.md.disabled` as equivalent when hashing Agent Space instances and project deployment drift, so enable/disable rename does not change content identity.
+- Keep Managed Skill hashing behavior compatible unless the managed-copy workflow is explicitly migrated.
 - Ignore common filesystem noise: `.DS_Store`, editor swap files, and Skill-kits temp files.
 
 Deployment baseline:

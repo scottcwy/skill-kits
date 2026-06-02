@@ -7,6 +7,11 @@ pub fn view_name() -> &'static str {
 pub fn renderable(model: &GuiModel) -> RenderableView {
     let summary = &model.dashboard;
     let main_rows = vec![
+        row(
+            "agent-space",
+            "Agent Space Skills",
+            summary.agent_space_instance_count,
+        ),
         row("managed", "Managed Skills", summary.managed_skill_count),
         RenderRow {
             id: "agents".to_string(),
@@ -48,7 +53,13 @@ pub fn renderable(model: &GuiModel) -> RenderableView {
         inspector_sections: vec![
             InspectorSection {
                 title: "Scope".to_string(),
-                lines: vec!["Global Inventory".to_string()],
+                lines: vec![
+                    format!(
+                        "Agent Space instances {}",
+                        summary.agent_space_instance_count
+                    ),
+                    format!("Managed Inventory copies {}", summary.managed_skill_count),
+                ],
             },
             InspectorSection {
                 title: "Recent Projects".to_string(),
@@ -57,12 +68,29 @@ pub fn renderable(model: &GuiModel) -> RenderableView {
             InspectorSection {
                 title: "Health".to_string(),
                 lines: vec![
-                    "Registry summaries loaded".to_string(),
-                    "Project scans run only on request".to_string(),
+                    format!("Registry {}", health_label(&summary.registry_health)),
+                    format!("Lock {}", health_label(&summary.lock_health)),
+                    format!("Cache {}", health_label(&summary.cache_health)),
+                    format!("Risk findings {}", summary.risk_count),
+                    format!("Outdated deployments {}", summary.outdated_deployment_count),
+                    format!("Drifted deployments {}", summary.drifted_deployment_count),
+                    format!("Invalid toggles {}", summary.invalid_toggle_count),
+                    format!(
+                        "Missing managed sources {}",
+                        summary.missing_managed_source_count
+                    ),
                 ],
             },
         ],
         empty_message: None,
+    }
+}
+
+fn health_label(health: &crate::core::status::HealthState) -> &'static str {
+    match health {
+        crate::core::status::HealthState::Ok => "Ok",
+        crate::core::status::HealthState::Warning => "Warning",
+        crate::core::status::HealthState::Error => "Error",
     }
 }
 

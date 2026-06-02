@@ -1,11 +1,11 @@
 # Skill-kits
 
-Skill-kits is a single-binary, local-first manager for AI Agent Skills. It owns imported skill copies, then deploys them into project-scoped Agent skill directories.
+Skill-kits is a single-binary, local-first manager for AI Agent Skills. It manages Agent Space instances in the directories Agents actually read from, while keeping Managed Inventory as an explicit install and deploy source.
 
 ## Language · 词表
 
 **Skill**:
-A directory containing a `SKILL.md` file that describes reusable agent capability.
+A directory containing `SKILL.md` or `SKILL.md.disabled` to describe reusable agent capability.
 _Avoid_: Plugin, package, script
 
 **Skill ID**:
@@ -32,6 +32,26 @@ _Avoid_: Managed path, install path
 A supported AI coding tool with a configured skills directory.
 _Avoid_: Client, runtime, provider
 
+**Agent Space**:
+A directory tree an enabled Agent actually reads for Skills.
+_Avoid_: Registry inventory, managed source, fake sync target
+
+**Skill Instance**:
+One physical Skill directory discovered in Agent Space.
+_Avoid_: Managed Skill, grouped Skill, registry row
+
+**Instance ID**:
+A stable identifier for one Skill Instance derived from Agent, Scope, and canonical Skill directory path.
+_Avoid_: Skill ID, content hash, Skill Name
+
+**Scan Read Model**:
+The in-memory Skill Instance model produced by scanning Agent Space without writing Registry state.
+_Avoid_: Registry sync, adopt, import
+
+**Managed Inventory Summary**:
+The GUI summary of Skill-kits-owned Managed Skills that are available as install or deploy sources.
+_Avoid_: Agent Space row, enablement state
+
 **Uninstall**:
 The removal of a Managed Skill from the Global Inventory.
 _Avoid_: Delete, remove source
@@ -46,7 +66,19 @@ _Avoid_: Disable, silent deletion
 
 **Adopt**:
 The import of an existing Agent skill into Skill-kits management.
-_Avoid_: Sync, overwrite, takeover
+_Avoid_: Scan, index, overwrite, takeover
+
+**Index Agent Skills**:
+The explicit indexing of Agent Space Skills without copying them into Managed Inventory.
+_Avoid_: Adopt, import, deploy
+
+**Scan Agent Spaces**:
+A read-only refresh of Skill Instances from configured Agent Spaces.
+_Avoid_: Adopt, import, registry write
+
+**Import Managed Copy**:
+The explicit copy of an Agent Space Skill into Managed Inventory.
+_Avoid_: Index, scan, deploy
 
 **Global Agent Adopt**:
 An Adopt operation that imports skills from real global Agent skills directories into Global Inventory without writing back.
@@ -93,18 +125,18 @@ A supported command output mode for human or machine consumption.
 _Avoid_: Registry format, config format
 
 **Dashboard View**:
-The default GUI section showing Global Inventory with the Scope Switcher.
+The default GUI section showing Agent Space instance counts, Managed Inventory summary, recent projects, and health.
 _Avoid_: Project-only home, marketing page
 
-**Skills View**:
-The GUI section for Global Inventory listing, detail, scan risk, and Uninstall.
+**Skill View**:
+The GUI section for Agent Space Skill Instance listing, detail, status, and instance-scoped actions.
 _Avoid_: Project deployments, Markets
 
-**Agents View**:
+**Agent View**:
 The GUI section for built-in and custom Agent project skill directory configuration.
 _Avoid_: Project deployments, launcher config
 
-**Projects View**:
+**Project View**:
 The GUI section for Recent Projects and project deployments, including enable, disable, remove, and redeploy.
 _Avoid_: Global Inventory, global sync
 
@@ -125,7 +157,7 @@ A state where Deploy targets a Project Skill Directory entry that already exists
 _Avoid_: Adoption Conflict, Deployment Drift
 
 **Skill Toggle File**:
-The `SKILL.md` or `SKILL.md.disabled` file whose name determines whether a Project Skill Deployment is enabled.
+The `SKILL.md` or `SKILL.md.disabled` file whose name determines whether a Skill Instance is enabled.
 _Avoid_: Project Profile switch, registry state
 
 **Default Enabled Deployment**:
@@ -162,11 +194,11 @@ _Avoid_: Managed replacement, global update
 
 **Global Inventory**:
 The full set of Managed Skills owned by Skill-kits.
-_Avoid_: Project scope, deployed skills
+_Avoid_: Agent Space, Project scope, deployed skills
 
 **Registry**:
-The TOML file set under `~/.skill-kits/registry/` that records Global Inventory and known deployments.
-_Avoid_: Database, cache
+The TOML file set under `~/.skill-kits/registry/` that records auxiliary Skill-kits state such as Managed Inventory and known deployments.
+_Avoid_: Enablement truth, Agent Space, database
 
 **Registry Lock**:
 The single write lock at `~/.skill-kits/locks/state.lock` required for Skill-kits state mutations.
@@ -270,14 +302,23 @@ _Avoid_: Global inventory status, Agent runtime status
 
 ## Relationships · 关系
 
-- A **Skill** must have exactly one `SKILL.md`.
+- A **Skill** must have exactly one active **Skill Toggle File** in normal operation.
+- An **Agent Space** may contain zero or more **Skill Instances**.
+- A **Skill Instance** belongs to exactly one **Agent** and exactly one global or project scope.
+- A **Skill Instance** must have exactly one **Instance ID**.
+- A **Skill Instance** derives enablement from its **Skill Toggle File**, not from the **Registry**.
+- A **Scan Read Model** may contain many **Skill Instances** and must not write the **Registry** in Tranche 1.
+- **Scan Agent Spaces** creates one **Scan Read Model** from configured Agent Spaces.
+- **Import Managed Copy** creates one **Managed Skill** from one Agent Space Skill.
+- **Managed Inventory Summary** summarizes **Managed Skills** without claiming Agent enablement state.
 - A **Managed Skill** must have exactly one **Skill ID**.
 - A **Managed Skill** must have exactly one **Skill Name**.
 - A **Managed Skill** may have zero or one **Skill Metadata** record.
 - A **Managed Skill** may remember zero or one **Source Path**.
-- **Adopt** creates exactly one **Managed Skill** from exactly one existing Agent skill.
+- **Adopt** creates exactly one **Managed Skill** from exactly one existing Agent skill in legacy v0.1 flows.
 - **Global Agent Adopt** reads from one or more real **Global Skill Directories**.
 - Built-in **Global Skill Directories** are Codex `~/.codex/skills`, Claude Code `~/.claude/skills`, and Gemini CLI `~/.gemini/skills`.
+- Codex built-in **Global Skill Directories** must not include `~/.skills-manager/skills` unless an Agent config explicitly declares that directory as Agent-readable.
 - **Project Adopt** reads from one Project Skill Directory in one Project Scope.
 - **Adopt** may produce zero or more **Adoption Conflicts**.
 - An **Adoption Conflict** contains two or more same-name Agent skills with different content hashes.
@@ -287,12 +328,12 @@ _Avoid_: Global inventory status, Agent runtime status
 - A **Project-supported Agent** must define one or more **Project Skill Directories**.
 - A **Custom Agent** may define one or more user-configured **Project Skill Directories**.
 - v0.1 **CLI Output Format** values are `table` and `json`.
-- v0.1 GUI sections are ordered as **Dashboard View**, **Skills View**, **Agents View**, and **Projects View**.
+- v0.1 GUI sections are ordered as **Dashboard View**, **Skill View**, **Agent View**, and **Project View**.
 - A **Project Skill Deployment** belongs to exactly one **Project Scope** and exactly one **Agent**.
 - A **Project Skill Deployment** is a copy of one **Managed Skill** by default.
 - A **Project Skill Deployment** may have exactly one **Deployment Baseline**.
 - A **Project Skill Deployment** may have exactly one **Deployment Record**.
-- A **Project Skill Deployment** has exactly one **Skill Toggle File**.
+- A **Project Skill Deployment** has exactly one active **Skill Toggle File** in normal operation.
 - **Deploy** creates a **Default Enabled Deployment** by default.
 - **Deploy** must stop on **Deploy Conflict** unless the user chooses a later explicit resolution.
 - A **Project Skill Deployment** must not contain an **Invalid Toggle State**.
@@ -301,8 +342,9 @@ _Avoid_: Global inventory status, Agent runtime status
 - A **Project Skill Deployment** may have **Missing Managed Source** when its Managed Skill is removed from Global Inventory.
 - **Deployment Drift** may be resolved by **Keep Project Copy**, **Overwrite From Managed**, or **Promote To Managed**.
 - **Promote To Managed** creates exactly one **Managed Skill Fork** by default.
-- The GUI opens to **Global Inventory** by default.
+- The GUI opens to **Dashboard View** by default.
 - The **Registry** is stored as TOML files in v0.1.
+- The **Registry** is auxiliary state and must not be treated as Agent enablement truth.
 - `config.toml`, `skills.toml`, and `deployments.toml` mutations must hold the **Registry Lock**.
 - `config.toml`, `skills.toml`, and `deployments.toml` mutations must use **Atomic Registry Write**.
 - **Security Scan** creates one **Risk Report** and does not block install, adopt, or deploy by default.
@@ -396,7 +438,7 @@ _Avoid_: Global inventory status, Agent runtime status
 > **Domain expert:** "No. v0.1 creates a Managed Skill Fork and keeps the original Managed Skill unchanged."
 
 > **Dev:** "Should the GUI start in project view?"
-> **Domain expert:** "No. The GUI starts with Global Inventory, with a Scope Switcher in the lower-left for project views."
+> **Domain expert:** "No. The GUI starts with Dashboard and leads with Agent Space instance counts plus Managed Inventory summary."
 
 > **Dev:** "Does v0.1 need SQLite?"
 > **Domain expert:** "No. Registry is plain TOML files under `~/.skill-kits/registry/`."
@@ -480,7 +522,7 @@ _Avoid_: Global inventory status, Agent runtime status
 - Project-level support is limited to Agents with native project skill directories; resolved: v0.1 only supports **Project-supported Agents** for project enablement.
 - Built-in v0.1 project directories are Codex `.agents/skills`, Claude Code `.claude/skills`, and Gemini CLI `.gemini/skills`; resolved: other Agents use **Custom Agent** path configuration.
 - CLI output is intentionally narrow in v0.1; resolved: **CLI Output Format** supports `table` and `json`, not `yaml`.
-- GUI sections are fixed for v0.1; resolved: **Dashboard View**, **Skills View**, **Agents View**, and **Projects View** in that order.
+- GUI sections are fixed for v0.1; resolved: **Dashboard View**, **Skill View**, **Agent View**, and **Project View** in that order.
 - Project disable does not move or delete the skill directory; resolved: only the **Skill Toggle File** is renamed, and simultaneous or missing toggle files create **Invalid Toggle State**.
 - Project deployment does not use symlink as the default; resolved: **Project Skill Deployment** is a physical copy of a Managed Skill.
 - New project deployments are enabled by default; resolved: **Deploy** creates a **Default Enabled Deployment** unless disabled deployment is added later.
@@ -489,7 +531,7 @@ _Avoid_: Global inventory status, Agent runtime status
 - Managed Skill updates do not automatically overwrite project copies; resolved: changed project copies become **Outdated Deployments** and may also contain **Deployment Drift** that must be resolved before redeploy.
 - Redeploy does not auto-merge or auto-overwrite project modifications; resolved: **Deployment Drift** requires explicit **Keep Project Copy**, **Overwrite From Managed**, or **Promote To Managed**.
 - Promote does not overwrite the original Managed Skill in v0.1; resolved: **Promote To Managed** creates a **Managed Skill Fork** by default.
-- GUI default scope is global, not project; resolved: the app opens to **Global Inventory** and exposes project context through the **Scope Switcher**.
+- GUI default entry is Dashboard, not project; resolved: the app opens to **Dashboard View** with Agent Space instance counts and Managed Inventory summary.
 - Project discovery is explicit; resolved: v0.1 remembers **Recent Projects** opened by the user and does not scan the filesystem for projects.
 - CLI project scope is explicit or cwd-based; resolved: **Project Command Scope** defaults to current directory and can be overridden with `--project`.
 - Project commands do not use `sync-project`; resolved: **Deploy** and **Redeploy** name project copy operations.

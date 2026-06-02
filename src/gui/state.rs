@@ -1,21 +1,37 @@
 use crate::core::{
-    adopt::{project_adopt_all, project_adopt_conflict_as_new, ProjectAdoptRequest},
-    agents::{add_custom_agent_config, update_agent_project_skill_dirs, AgentConfig},
+    adopt::{
+        global_agent_adopt_resilient, import_managed_copy, project_adopt, project_adopt_all,
+        project_adopt_conflict_as_new, GlobalAgentAdoptRequest, ImportManagedCopyRequest,
+        ProjectAdoptRequest,
+    },
+    agent_space::{
+        disable_skill_instance, enable_skill_instance, scan_agent_spaces, SkillInstance,
+        SkillInstanceRequest, SkillInstanceScope, SkillInstanceSourceKind,
+    },
+    agents::{
+        add_custom_agent_config, remove_custom_agent_config, reset_agent_project_skill_dirs,
+        update_agent_project_skill_dirs, AgentConfig, AgentKind,
+    },
     config::{read_config, RecentProject},
     ids::{AgentId, SkillId},
-    install::{uninstall_skill, UninstallSkillRequest},
-    onboarding::{project_onboarding_scan, DiscoveredProjectSkill, ProjectOnboardingScanRequest},
+    install::{install_local_skill, uninstall_skill, InstallLocalRequest, UninstallSkillRequest},
+    onboarding::{
+        project_onboarding_scan, record_recent_project, DiscoveredProjectSkill,
+        ProjectOnboardingScanRequest,
+    },
     paths::AppPaths,
     project::{
         deploy_project_skill, disable_project_skill, enable_project_skill,
         project_deployment_status, redeploy_project_skill, remove_project_skill,
-        ProjectDeployRequest, ProjectRedeployRequest, ProjectRemoveRequest, ProjectSkillRequest,
+        resolve_project_scope, ProjectDeployRequest, ProjectRedeployRequest, ProjectRemoveRequest,
+        ProjectSkillRequest,
     },
     registry::{
         read_deployments_registry, read_skills_registry, DeploymentRecord, DeploymentStatus,
-        ManagedSkill, SkillSource,
+        ManagedSkill, SkillSource, ToggleState,
     },
     scan::{scan_skill_dir, RiskFinding, RiskSeverity},
+    status::{global_status, HealthState},
     Result, SkillKitsError,
 };
 use camino::Utf8PathBuf;
@@ -23,6 +39,10 @@ use egui::Color32;
 
 pub const DRIFT_REMOVE_CONFIRMATION_MESSAGE: &str =
     "This project copy has local changes. Removing it deletes only this deployed Skill, not the Agent skill root.";
+pub const GLOBAL_UNINSTALL_CONFIRMATION_MESSAGE: &str =
+    "Uninstall removes this managed copy from Managed Inventory. Agent Space copies are not deleted.";
+pub const SKILL_INSTANCE_DISABLE_CONFIRMATION_MESSAGE: &str =
+    "Disable changes SKILL.md to SKILL.md.disabled in the Agent Space. It does not delete the Skill directory.";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NavigationView {
@@ -38,9 +58,9 @@ impl NavigationView {
     pub fn title(self) -> &'static str {
         match self {
             Self::Dashboard => "Dashboard",
-            Self::Skills => "Skills",
-            Self::Agents => "Agents",
-            Self::Projects => "Projects",
+            Self::Skills => "Skill",
+            Self::Agents => "Agent",
+            Self::Projects => "Project",
         }
     }
 }
@@ -53,6 +73,14 @@ pub enum GuiScope {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum GuiActionIntent {
+    InstallLocalSkill {
+        source_path: Utf8PathBuf,
+    },
+    ScanAgentSpaces,
+    ImportAllManagedCopies,
+    ImportManagedCopy {
+        instance_id: String,
+    },
     ScanSkill {
         skill_id: SkillId,
     },
@@ -74,6 +102,12 @@ pub enum GuiActionIntent {
         agent_id: AgentId,
         skill_name: String,
     },
+    EnableSkillInstance {
+        instance_id: String,
+    },
+    DisableSkillInstance {
+        instance_id: String,
+    },
     RemoveDeployment {
         project_path: Utf8PathBuf,
         agent_id: AgentId,
@@ -93,6 +127,11 @@ pub enum GuiActionIntent {
     ProjectAdoptAll {
         project_path: Utf8PathBuf,
     },
+    ProjectAdoptSelected {
+        project_path: Utf8PathBuf,
+        agent_id: AgentId,
+        skill_name: String,
+    },
     ProjectImportConflictAsNew {
         project_path: Utf8PathBuf,
         agent_id: AgentId,
@@ -105,6 +144,12 @@ pub enum GuiActionIntent {
         agent_id: AgentId,
         project_skill_dirs: Vec<Utf8PathBuf>,
     },
+    ResetAgentProjectSkillDirs {
+        agent_id: AgentId,
+    },
+    RemoveCustomAgent {
+        agent_id: AgentId,
+    },
     AddCustomAgent {
         agent_id: AgentId,
         label: String,
@@ -115,11 +160,25 @@ pub enum GuiActionIntent {
 #[derive(Clone, Debug)]
 pub struct GuiController {
     paths: AppPaths,
+    home_dir: Option<Utf8PathBuf>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum GuiControllerOutcome {
     None,
+    AgentSpacesScanned {
+        instances: usize,
+    },
+    AgentSkillsAdopted {
+        imported: usize,
+        conflicts: usize,
+        failures: usize,
+    },
+    SkillInstalled {
+        skill_id: SkillId,
+        scanned_hash: String,
+        findings: Vec<RiskFinding>,
+    },
     SkillScan {
         skill_id: SkillId,
         scanned_hash: String,
@@ -128,9 +187,13 @@ pub enum GuiControllerOutcome {
     ProjectScan {
         project_path: Utf8PathBuf,
         discovered_unmanaged_count: usize,
+        discovered_skills: Vec<ProjectDiscoveredSkill>,
         adopt_result: Option<ProjectAdoptAllSummary>,
         pending_conflicts: Vec<ProjectConflict>,
         preserve_existing_conflicts: bool,
+    },
+    ProjectOpened {
+        project_path: Utf8PathBuf,
     },
 }
 
@@ -144,6 +207,34 @@ pub struct ProjectAdoptAllSummary {
 pub struct ProjectConflict {
     pub agent_id: AgentId,
     pub skill_name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectDiscoveredSkill {
+    pub agent_id: AgentId,
+    pub name: String,
+    pub path: Utf8PathBuf,
+    pub toggle: ToggleState,
+}
+
+impl From<DiscoveredProjectSkill> for ProjectDiscoveredSkill {
+    fn from(skill: DiscoveredProjectSkill) -> Self {
+        Self {
+            agent_id: skill.agent_id,
+            name: skill.name,
+            path: skill.path,
+            toggle: skill.toggle,
+        }
+    }
+}
+
+impl ProjectDiscoveredSkill {
+    fn conflict_key(&self) -> ProjectConflict {
+        ProjectConflict {
+            agent_id: self.agent_id.clone(),
+            skill_name: self.name.clone(),
+        }
+    }
 }
 
 fn unresolved_project_conflicts(discovered: &[DiscoveredProjectSkill]) -> Vec<ProjectConflict> {
@@ -176,17 +267,138 @@ fn pending_conflicts_intersection(
         .collect()
 }
 
+fn default_home_dir() -> Result<Utf8PathBuf> {
+    let home = dirs::home_dir()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "home directory"))?;
+    Utf8PathBuf::from_path_buf(home).map_err(|path| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("home path is not UTF-8: {}", path.display()),
+        )
+        .into()
+    })
+}
+
 impl GuiController {
     pub fn new(paths: AppPaths) -> Self {
-        Self { paths }
+        Self {
+            paths,
+            home_dir: None,
+        }
+    }
+
+    pub fn with_home_dir(paths: AppPaths, home_dir: Utf8PathBuf) -> Self {
+        Self {
+            paths,
+            home_dir: Some(home_dir),
+        }
     }
 
     pub fn paths(&self) -> &AppPaths {
         &self.paths
     }
 
+    fn load_model(&self) -> Result<GuiModel> {
+        match &self.home_dir {
+            Some(home_dir) => GuiModel::load_with_home_dir(&self.paths, home_dir.clone()),
+            None => GuiModel::load(&self.paths),
+        }
+    }
+
     pub fn execute(&self, intent: &GuiActionIntent) -> Result<GuiControllerOutcome> {
         let outcome = match intent {
+            GuiActionIntent::InstallLocalSkill { source_path } => {
+                let result = install_local_skill(
+                    InstallLocalRequest {
+                        source_path: source_path.as_path(),
+                    },
+                    &self.paths,
+                )?;
+                GuiControllerOutcome::SkillInstalled {
+                    skill_id: result.skill.id,
+                    scanned_hash: result.skill.content_hash,
+                    findings: result.risk_findings,
+                }
+            }
+            GuiActionIntent::ScanAgentSpaces => {
+                let home = self.home_dir.clone().map_or_else(default_home_dir, Ok)?;
+                let instances = scan_agent_spaces(&self.paths, &home)?.len();
+                GuiControllerOutcome::AgentSpacesScanned { instances }
+            }
+            GuiActionIntent::ImportAllManagedCopies => {
+                let home = self.home_dir.clone().map_or_else(default_home_dir, Ok)?;
+                let config = read_config(&self.paths)?;
+                let mut imported = 0;
+                let mut conflicts = 0;
+                let mut failures = 0;
+                for agent in config.agents.iter().filter(|agent| agent.enabled) {
+                    match global_agent_adopt_resilient(GlobalAgentAdoptRequest {
+                        app_paths: &self.paths,
+                        agent_id: &agent.id,
+                        home_dir: &home,
+                    }) {
+                        Ok(report) => {
+                            imported += report.imported;
+                            conflicts += report.conflicts;
+                            failures += report.failures;
+                        }
+                        Err(_) => {
+                            failures += 1;
+                        }
+                    }
+                }
+                GuiControllerOutcome::AgentSkillsAdopted {
+                    imported,
+                    conflicts,
+                    failures,
+                }
+            }
+            GuiActionIntent::ImportManagedCopy { instance_id } => {
+                let home = self.home_dir.clone().map_or_else(default_home_dir, Ok)?;
+                let instance = scan_agent_spaces(&self.paths, &home)?
+                    .into_iter()
+                    .find(|instance| instance.id == *instance_id)
+                    .ok_or_else(|| SkillKitsError::SkillNotFound {
+                        query: instance_id.clone(),
+                    })?;
+                let skill = match &instance.scope {
+                    SkillInstanceScope::Global => import_managed_copy(ImportManagedCopyRequest {
+                        app_paths: &self.paths,
+                        agent_id: &instance.agent_id,
+                        source_path: &instance.skill_dir,
+                    })?,
+                    SkillInstanceScope::Project { path, .. } => {
+                        project_adopt(ProjectAdoptRequest {
+                            app_paths: &self.paths,
+                            project_path: path,
+                            agent_id: &instance.agent_id,
+                            skill_name: instance
+                                .skill_dir
+                                .file_name()
+                                .unwrap_or(instance.name.as_str()),
+                        })?;
+                        read_skills_registry(&self.paths)?
+                            .skills
+                            .into_iter()
+                            .find(|skill| {
+                                matches!(
+                                    &skill.source,
+                                    SkillSource::ProjectAdopt { source_path, .. }
+                                        if source_path == &instance.skill_dir
+                                )
+                            })
+                            .ok_or_else(|| SkillKitsError::SkillNotFound {
+                                query: instance.name.clone(),
+                            })?
+                    }
+                };
+                let findings = scan_skill_dir(&skill.managed_path)?;
+                GuiControllerOutcome::SkillInstalled {
+                    skill_id: skill.id,
+                    scanned_hash: skill.content_hash,
+                    findings,
+                }
+            }
             GuiActionIntent::ScanSkill { skill_id } => {
                 let skill = read_skills_registry(&self.paths)?
                     .skills
@@ -248,6 +460,24 @@ impl GuiController {
                 })?;
                 GuiControllerOutcome::None
             }
+            GuiActionIntent::EnableSkillInstance { instance_id } => {
+                let home = self.home_dir.clone().map_or_else(default_home_dir, Ok)?;
+                enable_skill_instance(SkillInstanceRequest {
+                    app_paths: &self.paths,
+                    home_dir: &home,
+                    instance_id,
+                })?;
+                GuiControllerOutcome::None
+            }
+            GuiActionIntent::DisableSkillInstance { instance_id } => {
+                let home = self.home_dir.clone().map_or_else(default_home_dir, Ok)?;
+                disable_skill_instance(SkillInstanceRequest {
+                    app_paths: &self.paths,
+                    home_dir: &home,
+                    instance_id,
+                })?;
+                GuiControllerOutcome::None
+            }
             GuiActionIntent::RemoveDeployment {
                 project_path,
                 agent_id,
@@ -289,9 +519,43 @@ impl GuiController {
                 GuiControllerOutcome::ProjectScan {
                     project_path: report.project_path,
                     discovered_unmanaged_count: report.discovered.len(),
+                    discovered_skills: report
+                        .discovered
+                        .into_iter()
+                        .map(ProjectDiscoveredSkill::from)
+                        .collect(),
                     adopt_result: None,
                     pending_conflicts,
                     preserve_existing_conflicts: true,
+                }
+            }
+            GuiActionIntent::ProjectAdoptSelected {
+                project_path,
+                agent_id,
+                skill_name,
+            } => {
+                project_adopt(ProjectAdoptRequest {
+                    app_paths: &self.paths,
+                    project_path,
+                    agent_id,
+                    skill_name,
+                })?;
+                let report = project_onboarding_scan(ProjectOnboardingScanRequest {
+                    app_paths: &self.paths,
+                    project_path,
+                })?;
+                let pending_conflicts = unresolved_project_conflicts(&report.discovered);
+                GuiControllerOutcome::ProjectScan {
+                    project_path: report.project_path,
+                    discovered_unmanaged_count: report.discovered.len(),
+                    discovered_skills: report
+                        .discovered
+                        .into_iter()
+                        .map(ProjectDiscoveredSkill::from)
+                        .collect(),
+                    adopt_result: None,
+                    pending_conflicts,
+                    preserve_existing_conflicts: false,
                 }
             }
             GuiActionIntent::ProjectAdoptAll { project_path } => {
@@ -316,6 +580,11 @@ impl GuiController {
                 GuiControllerOutcome::ProjectScan {
                     project_path: report.project_path,
                     discovered_unmanaged_count: report.discovered.len(),
+                    discovered_skills: report
+                        .discovered
+                        .into_iter()
+                        .map(ProjectDiscoveredSkill::from)
+                        .collect(),
                     adopt_result: Some(ProjectAdoptAllSummary {
                         imported,
                         conflicts,
@@ -343,17 +612,36 @@ impl GuiController {
                 GuiControllerOutcome::ProjectScan {
                     project_path: report.project_path,
                     discovered_unmanaged_count: report.discovered.len(),
+                    discovered_skills: report
+                        .discovered
+                        .into_iter()
+                        .map(ProjectDiscoveredSkill::from)
+                        .collect(),
                     adopt_result: None,
                     pending_conflicts,
                     preserve_existing_conflicts: false,
                 }
             }
-            GuiActionIntent::OpenProject { .. } => GuiControllerOutcome::None,
+            GuiActionIntent::OpenProject { project_path } => {
+                let project = resolve_project_scope(Some(project_path))?;
+                record_recent_project(&self.paths, &project.path)?;
+                GuiControllerOutcome::ProjectOpened {
+                    project_path: project.path,
+                }
+            }
             GuiActionIntent::UpdateAgentProjectSkillDirs {
                 agent_id,
                 project_skill_dirs,
             } => {
                 update_agent_project_skill_dirs(&self.paths, agent_id, project_skill_dirs.clone())?;
+                GuiControllerOutcome::None
+            }
+            GuiActionIntent::ResetAgentProjectSkillDirs { agent_id } => {
+                reset_agent_project_skill_dirs(&self.paths, agent_id)?;
+                GuiControllerOutcome::None
+            }
+            GuiActionIntent::RemoveCustomAgent { agent_id } => {
+                remove_custom_agent_config(&self.paths, agent_id)?;
                 GuiControllerOutcome::None
             }
             GuiActionIntent::AddCustomAgent {
@@ -376,11 +664,20 @@ impl GuiController {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DashboardSummary {
+    pub agent_space_instance_count: usize,
     pub managed_skill_count: usize,
     pub agent_count: usize,
     pub enabled_agent_count: usize,
     pub recent_project_count: usize,
     pub deployment_count: usize,
+    pub outdated_deployment_count: usize,
+    pub drifted_deployment_count: usize,
+    pub invalid_toggle_count: usize,
+    pub missing_managed_source_count: usize,
+    pub registry_health: HealthState,
+    pub lock_health: HealthState,
+    pub cache_health: HealthState,
+    pub risk_count: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -388,7 +685,9 @@ pub struct ProjectSummary {
     pub name: String,
     pub path: Utf8PathBuf,
     pub deployment_count: usize,
+    pub onboarding_scanned: bool,
     pub discovered_unmanaged_count: usize,
+    pub discovered_skills: Vec<ProjectDiscoveredSkill>,
     pub last_adopt_all_result: Option<ProjectAdoptAllSummary>,
     pub pending_conflicts: Vec<ProjectConflict>,
     pub skipped_conflicts: Vec<ProjectConflict>,
@@ -485,6 +784,16 @@ pub struct AgentEditorDraft {
     pub project_dir_text: String,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct InstallLocalSkillDraft {
+    pub path_text: String,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct OpenProjectDraft {
+    pub path_text: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProjectDeployTarget {
     pub project_path: Utf8PathBuf,
@@ -500,6 +809,7 @@ pub struct GuiModel {
     pub active_view: NavigationView,
     pub active_scope: GuiScope,
     pub dashboard: DashboardSummary,
+    pub skill_instances: Vec<SkillInstance>,
     pub skills: Vec<ManagedSkill>,
     pub agents: Vec<AgentConfig>,
     pub recent_projects: Vec<RecentProject>,
@@ -507,19 +817,39 @@ pub struct GuiModel {
     pub deployments: Vec<DeploymentRecord>,
     pub deployment_statuses: Vec<DeploymentStatus>,
     selected_skill: Option<SkillId>,
+    selected_skill_instance: Option<String>,
     selected_agent: Option<AgentId>,
     selected_project: Option<Utf8PathBuf>,
     selected_deployment: Option<String>,
+    selected_discovered_project_skill: Option<ProjectConflict>,
+    pending_uninstall_confirmation: Option<SkillId>,
+    pending_disable_skill_instance_confirmation: Option<String>,
     pending_remove_confirmation: Option<String>,
+    skill_agent_filter: Option<AgentId>,
+    skill_scope_filter: Option<String>,
+    skill_status_filter: Option<String>,
     pending_intents: Vec<GuiActionIntent>,
     last_status: Option<GuiStatus>,
     skill_risk_reports: Vec<(SkillId, GuiRiskReport)>,
     agent_editor_draft: Option<AgentEditorDraft>,
+    install_local_skill_draft: Option<InstallLocalSkillDraft>,
+    open_project_draft: Option<OpenProjectDraft>,
 }
 
 impl GuiModel {
     pub fn load(paths: &AppPaths) -> Result<Self> {
+        let home = paths
+            .data_root
+            .file_name()
+            .filter(|name| *name == ".skill-kits")
+            .and_then(|_| paths.data_root.parent().map(ToOwned::to_owned))
+            .map_or_else(default_home_dir, Ok)?;
+        Self::load_with_home_dir(paths, home)
+    }
+
+    pub fn load_with_home_dir(paths: &AppPaths, home_dir: Utf8PathBuf) -> Result<Self> {
         let config = read_config(paths)?;
+        let skill_instances = scan_agent_spaces(paths, &home_dir)?;
         let skills = read_skills_registry(paths)?.skills;
         let deployments = read_deployments_registry(paths)?.deployments;
         let deployment_statuses = deployments
@@ -545,19 +875,49 @@ impl GuiModel {
                     name: project.name.clone(),
                     path: project.path.clone(),
                     deployment_count,
+                    onboarding_scanned: false,
                     discovered_unmanaged_count: 0,
+                    discovered_skills: Vec::new(),
                     last_adopt_all_result: None,
                     pending_conflicts: Vec::new(),
                     skipped_conflicts: Vec::new(),
                 }
             })
             .collect::<Vec<_>>();
+        let status = global_status(paths)?;
         let dashboard = DashboardSummary {
-            managed_skill_count: skills.len(),
-            agent_count: config.agents.len(),
-            enabled_agent_count: config.agents.iter().filter(|agent| agent.enabled).count(),
-            recent_project_count: config.recent_projects.len(),
+            agent_space_instance_count: skill_instances.len(),
+            managed_skill_count: status.managed_skill_count,
+            agent_count: status.agent_count,
+            enabled_agent_count: status.enabled_agent_count,
+            recent_project_count: status.recent_project_count,
             deployment_count: deployments.len(),
+            outdated_deployment_count: deployment_statuses
+                .iter()
+                .filter(|status| status.outdated)
+                .count(),
+            drifted_deployment_count: deployment_statuses
+                .iter()
+                .filter(|status| status.drift)
+                .count(),
+            invalid_toggle_count: deployment_statuses
+                .iter()
+                .filter(|status| {
+                    matches!(
+                        status.toggle,
+                        crate::core::registry::ToggleState::InvalidBothPresent
+                            | crate::core::registry::ToggleState::InvalidBothMissing
+                    )
+                })
+                .count(),
+            missing_managed_source_count: deployment_statuses
+                .iter()
+                .filter(|status| status.missing_managed_source)
+                .count(),
+            registry_health: status.registry_health,
+            lock_health: status.lock_health,
+            cache_health: status.cache_health,
+            risk_count: status.risk_count,
         };
         let selected_project = config
             .recent_projects
@@ -568,6 +928,7 @@ impl GuiModel {
             active_view: NavigationView::Dashboard,
             active_scope: GuiScope::GlobalInventory,
             dashboard,
+            skill_instances,
             skills,
             agents: config.agents,
             recent_projects: config.recent_projects,
@@ -575,14 +936,23 @@ impl GuiModel {
             deployments,
             deployment_statuses,
             selected_skill: None,
+            selected_skill_instance: None,
             selected_agent: None,
             selected_project,
             selected_deployment: None,
+            selected_discovered_project_skill: None,
+            pending_uninstall_confirmation: None,
+            pending_disable_skill_instance_confirmation: None,
             pending_remove_confirmation: None,
+            skill_agent_filter: None,
+            skill_scope_filter: None,
+            skill_status_filter: None,
             pending_intents: Vec::new(),
             last_status: None,
             skill_risk_reports: Vec::new(),
             agent_editor_draft: None,
+            install_local_skill_draft: None,
+            open_project_draft: None,
         })
     }
 
@@ -594,13 +964,25 @@ impl GuiModel {
         if let GuiScope::Project(path) = &scope {
             self.selected_project = Some(path.clone());
             self.selected_deployment = None;
+            self.selected_discovered_project_skill = None;
             self.pending_remove_confirmation = None;
         }
         self.active_scope = scope;
     }
 
     pub fn select_skill(&mut self, skill_id: SkillId) {
+        if self
+            .pending_uninstall_confirmation
+            .as_ref()
+            .is_some_and(|pending| pending != &skill_id)
+        {
+            self.pending_uninstall_confirmation = None;
+        }
         self.selected_skill = Some(skill_id);
+    }
+
+    pub fn select_managed_skill(&mut self, skill_id: SkillId) {
+        self.select_skill(skill_id);
     }
 
     pub fn select_agent(&mut self, agent_id: AgentId) {
@@ -610,6 +992,7 @@ impl GuiModel {
     pub fn select_project(&mut self, project_path: Utf8PathBuf) {
         self.selected_project = Some(project_path);
         self.selected_deployment = None;
+        self.selected_discovered_project_skill = None;
         self.pending_remove_confirmation = None;
     }
 
@@ -622,14 +1005,19 @@ impl GuiModel {
             self.pending_remove_confirmation = None;
         }
         self.selected_deployment = Some(deployment_id);
+        self.selected_discovered_project_skill = None;
     }
 
     pub fn select_render_row(&mut self, row_id: &str) -> bool {
         match self.active_view {
             NavigationView::Dashboard => false,
             NavigationView::Skills => {
-                if self.skills.iter().any(|skill| skill.id.as_str() == row_id) {
-                    self.select_skill(SkillId::new(row_id));
+                if self
+                    .skill_instances
+                    .iter()
+                    .any(|instance| instance.id == row_id)
+                {
+                    self.select_skill_instance(row_id.to_string());
                     true
                 } else {
                     false
@@ -644,6 +1032,20 @@ impl GuiModel {
                 }
             }
             NavigationView::Projects => {
+                if let Some(discovered) = parse_discovered_project_row_id(row_id) {
+                    if self.selected_project_summary().is_some_and(|summary| {
+                        summary.discovered_skills.iter().any(|skill| {
+                            skill.agent_id == discovered.agent_id
+                                && skill.name == discovered.skill_name
+                        })
+                    }) {
+                        self.selected_discovered_project_skill = Some(discovered);
+                        self.selected_deployment = None;
+                        self.pending_remove_confirmation = None;
+                        return true;
+                    }
+                    return false;
+                }
                 if let Some(project_path) = self
                     .deployments
                     .iter()
@@ -664,6 +1066,29 @@ impl GuiModel {
         &self.pending_intents
     }
 
+    pub fn append_pending_intents(&mut self, intents: Vec<GuiActionIntent>) {
+        self.pending_intents.extend(intents);
+    }
+
+    pub fn take_pending_intents(&mut self) -> Vec<GuiActionIntent> {
+        std::mem::take(&mut self.pending_intents)
+    }
+
+    pub fn pending_action_status_label(&self) -> String {
+        let Some(intent) = self.pending_intents.first() else {
+            return "Idle".to_string();
+        };
+        format!(
+            "Next: {} ({} queued)",
+            action_label(intent),
+            self.pending_intents.len()
+        )
+    }
+
+    pub fn next_action_label(&self) -> Option<&'static str> {
+        self.pending_intents.first().map(action_label)
+    }
+
     pub fn last_status(&self) -> Option<&GuiStatus> {
         self.last_status.as_ref()
     }
@@ -679,10 +1104,98 @@ impl GuiModel {
         self.pending_remove_confirmation.as_deref()
     }
 
+    pub fn pending_uninstall_confirmation(&self) -> Option<&str> {
+        self.pending_uninstall_confirmation
+            .as_ref()
+            .map(SkillId::as_str)
+    }
+
+    pub fn pending_uninstall_confirmation_message(&self) -> Option<&'static str> {
+        self.pending_uninstall_confirmation
+            .as_ref()
+            .map(|_| GLOBAL_UNINSTALL_CONFIRMATION_MESSAGE)
+    }
+
+    pub fn pending_disable_skill_instance_confirmation(&self) -> Option<&str> {
+        self.pending_disable_skill_instance_confirmation.as_deref()
+    }
+
+    pub fn pending_disable_skill_instance_confirmation_message(&self) -> Option<&'static str> {
+        self.pending_disable_skill_instance_confirmation
+            .as_ref()
+            .map(|_| SKILL_INSTANCE_DISABLE_CONFIRMATION_MESSAGE)
+    }
+
     pub fn pending_remove_confirmation_message(&self) -> Option<&'static str> {
         self.pending_remove_confirmation
             .as_ref()
             .map(|_| DRIFT_REMOVE_CONFIRMATION_MESSAGE)
+    }
+
+    pub fn set_skill_agent_filter(&mut self, agent_id: Option<AgentId>) {
+        self.skill_agent_filter = agent_id;
+    }
+
+    pub fn skill_agent_filter(&self) -> Option<&AgentId> {
+        self.skill_agent_filter.as_ref()
+    }
+
+    pub fn set_skill_scope_filter(&mut self, scope: Option<String>) {
+        self.skill_scope_filter = scope;
+    }
+
+    pub fn skill_scope_filter(&self) -> Option<&str> {
+        self.skill_scope_filter.as_deref()
+    }
+
+    pub fn set_skill_status_filter(&mut self, status: Option<String>) {
+        self.skill_status_filter = status;
+    }
+
+    pub fn skill_status_filter(&self) -> Option<&str> {
+        self.skill_status_filter.as_deref()
+    }
+
+    pub fn skill_agent_filter_options(&self) -> Vec<(AgentId, String)> {
+        let mut options = self
+            .skill_instances
+            .iter()
+            .map(|instance| {
+                let label = self
+                    .agents
+                    .iter()
+                    .find(|agent| agent.id == instance.agent_id)
+                    .map(|agent| agent.label.clone())
+                    .unwrap_or_else(|| instance.agent_id.to_string());
+                (instance.agent_id.clone(), label)
+            })
+            .collect::<Vec<_>>();
+        options.sort_by(|left, right| left.1.cmp(&right.1).then(left.0.cmp(&right.0)));
+        options.dedup_by(|left, right| left.0 == right.0);
+        options
+    }
+
+    pub fn skill_scope_filter_options(&self) -> Vec<String> {
+        let mut options = self
+            .skill_instances
+            .iter()
+            .map(|instance| skill_instance_scope_filter_label(&instance.scope))
+            .collect::<Vec<_>>();
+        options.sort();
+        options.dedup();
+        options
+    }
+
+    pub fn skill_status_filter_options(&self) -> Vec<&'static str> {
+        const ORDER: [&str; 5] = ["Enabled", "Disabled", "Invalid", "Missing", "Read-only"];
+        ORDER
+            .into_iter()
+            .filter(|status| {
+                self.skill_instances
+                    .iter()
+                    .any(|instance| skill_instance_status_label(instance) == *status)
+            })
+            .collect()
     }
 
     pub fn request_scan_selected_skill(&mut self) -> Option<GuiActionIntent> {
@@ -690,9 +1203,101 @@ impl GuiModel {
         self.push_intent(GuiActionIntent::ScanSkill { skill_id })
     }
 
-    pub fn request_uninstall_selected_skill(&mut self) -> Option<GuiActionIntent> {
+    pub fn begin_install_local_skill(&mut self) {
+        self.install_local_skill_draft = Some(InstallLocalSkillDraft::default());
+    }
+
+    pub fn update_install_local_skill_path(&mut self, value: String) {
+        if let Some(draft) = &mut self.install_local_skill_draft {
+            draft.path_text = value;
+        }
+    }
+
+    pub fn request_save_install_local_skill(&mut self) -> Option<GuiActionIntent> {
+        let source_path = self.install_local_skill_draft.as_ref()?.path_text.trim();
+        if source_path.is_empty() {
+            return None;
+        }
+        self.push_intent(GuiActionIntent::InstallLocalSkill {
+            source_path: source_path.into(),
+        })
+    }
+
+    pub fn request_import_all_agent_skills_as_managed_copies(&mut self) -> Option<GuiActionIntent> {
+        self.push_intent(GuiActionIntent::ImportAllManagedCopies)
+    }
+
+    pub fn request_scan_agent_spaces(&mut self) -> Option<GuiActionIntent> {
+        self.push_intent(GuiActionIntent::ScanAgentSpaces)
+    }
+
+    pub fn request_import_selected_skill_instance_as_managed_copy(
+        &mut self,
+    ) -> Option<GuiActionIntent> {
+        let instance = self.selected_skill_instance()?.clone();
+        if !matches!(
+            instance.source_kind,
+            SkillInstanceSourceKind::AgentSpace | SkillInstanceSourceKind::ProjectDeployment
+        ) {
+            return None;
+        }
+        if instance.stable_id.is_some() {
+            return None;
+        }
+        if matches!(
+            instance.toggle_state,
+            ToggleState::InvalidBothPresent | ToggleState::InvalidBothMissing
+        ) {
+            return None;
+        }
+        self.push_intent(GuiActionIntent::ImportManagedCopy {
+            instance_id: instance.id,
+        })
+    }
+
+    pub fn cancel_install_local_skill(&mut self) {
+        self.install_local_skill_draft = None;
+    }
+
+    pub fn begin_open_project(&mut self) {
+        self.open_project_draft = Some(OpenProjectDraft::default());
+    }
+
+    pub fn update_open_project_path(&mut self, value: String) {
+        if let Some(draft) = &mut self.open_project_draft {
+            draft.path_text = value;
+        }
+    }
+
+    pub fn request_save_open_project(&mut self) -> Option<GuiActionIntent> {
+        let project_path = self.open_project_draft.as_ref()?.path_text.trim();
+        if project_path.is_empty() {
+            return None;
+        }
+        let project = resolve_project_scope(Some(camino::Utf8Path::new(project_path))).ok()?;
+        self.push_intent(GuiActionIntent::OpenProject {
+            project_path: project.path,
+        })
+    }
+
+    pub fn cancel_open_project(&mut self) {
+        self.open_project_draft = None;
+    }
+
+    pub fn request_uninstall_selected_skill(&mut self, confirmed: bool) -> Option<GuiActionIntent> {
         let skill_id = self.selected_skill.clone()?;
+        if !confirmed {
+            self.pending_uninstall_confirmation = Some(skill_id);
+            return None;
+        }
+        self.pending_uninstall_confirmation = None;
         self.push_intent(GuiActionIntent::UninstallSkill { skill_id })
+    }
+
+    pub fn confirm_pending_uninstall(&mut self) -> Option<GuiActionIntent> {
+        let skill_id = self.pending_uninstall_confirmation.clone()?;
+        self.selected_skill = Some(skill_id);
+        self.request_uninstall_selected_skill(true)
     }
 
     pub fn request_deploy_selected_skill(&mut self, agent_id: AgentId) -> Option<GuiActionIntent> {
@@ -787,6 +1392,22 @@ impl GuiModel {
         })
     }
 
+    pub fn request_adopt_selected_discovered_project_skill(&mut self) -> Option<GuiActionIntent> {
+        let project = self.selected_project_summary()?;
+        let selected = self.selected_discovered_project_skill.as_ref()?;
+        let skill = project.discovered_skills.iter().find(|skill| {
+            skill.agent_id == selected.agent_id && skill.name == selected.skill_name
+        })?;
+        if project.pending_conflicts.contains(&skill.conflict_key()) {
+            return None;
+        }
+        self.push_intent(GuiActionIntent::ProjectAdoptSelected {
+            project_path: project.path.clone(),
+            agent_id: skill.agent_id.clone(),
+            skill_name: skill.name.clone(),
+        })
+    }
+
     pub fn request_import_selected_project_conflict_as_new(&mut self) -> Option<GuiActionIntent> {
         let project = self.selected_project_summary()?;
         let conflict = project.pending_conflicts.first()?;
@@ -871,6 +1492,26 @@ impl GuiModel {
         self.push_intent(intent)
     }
 
+    pub fn request_reset_selected_agent_project_dirs(&mut self) -> Option<GuiActionIntent> {
+        let agent = self.selected_agent()?;
+        if agent.kind != AgentKind::BuiltIn {
+            return None;
+        }
+        self.push_intent(GuiActionIntent::ResetAgentProjectSkillDirs {
+            agent_id: agent.id.clone(),
+        })
+    }
+
+    pub fn request_remove_selected_custom_agent(&mut self) -> Option<GuiActionIntent> {
+        let agent = self.selected_agent()?;
+        if agent.kind != AgentKind::Custom {
+            return None;
+        }
+        self.push_intent(GuiActionIntent::RemoveCustomAgent {
+            agent_id: agent.id.clone(),
+        })
+    }
+
     pub fn cancel_agent_editor(&mut self) {
         self.agent_editor_draft = None;
     }
@@ -891,6 +1532,44 @@ impl GuiModel {
             agent_id: deployment.agent_id,
             skill_name: deployment.skill_name,
         })
+    }
+
+    pub fn request_enable_selected_skill_instance(&mut self) -> Option<GuiActionIntent> {
+        let instance = self.selected_skill_instance()?.clone();
+        if !instance.writable || instance.toggle_state != ToggleState::Disabled {
+            return None;
+        }
+        self.push_intent(GuiActionIntent::EnableSkillInstance {
+            instance_id: instance.id,
+        })
+    }
+
+    pub fn request_disable_selected_skill_instance(&mut self) -> Option<GuiActionIntent> {
+        self.request_disable_selected_skill_instance_with_confirmation(true)
+    }
+
+    pub fn request_disable_selected_skill_instance_with_confirmation(
+        &mut self,
+        confirmed: bool,
+    ) -> Option<GuiActionIntent> {
+        let instance = self.selected_skill_instance()?.clone();
+        if !instance.writable || instance.toggle_state != ToggleState::Enabled {
+            return None;
+        }
+        if !confirmed {
+            self.pending_disable_skill_instance_confirmation = Some(instance.id);
+            return None;
+        }
+        self.pending_disable_skill_instance_confirmation = None;
+        self.push_intent(GuiActionIntent::DisableSkillInstance {
+            instance_id: instance.id,
+        })
+    }
+
+    pub fn confirm_pending_disable_skill_instance(&mut self) -> Option<GuiActionIntent> {
+        let instance_id = self.pending_disable_skill_instance_confirmation.clone()?;
+        self.selected_skill_instance = Some(instance_id);
+        self.request_disable_selected_skill_instance_with_confirmation(true)
     }
 
     pub fn request_remove_selected_deployment(&mut self, force: bool) -> Option<GuiActionIntent> {
@@ -955,17 +1634,24 @@ impl GuiModel {
         let active_view = self.active_view;
         let active_scope = self.active_scope.clone();
         let selected_skill = self.selected_skill.clone();
+        let selected_skill_instance = self.selected_skill_instance.clone();
         let selected_agent = self.selected_agent.clone();
         let selected_project = self.selected_project.clone();
         let selected_deployment = self.selected_deployment.clone();
+        let selected_discovered_project_skill = self.selected_discovered_project_skill.clone();
+        let pending_uninstall_confirmation = self.pending_uninstall_confirmation.clone();
+        let pending_disable_skill_instance_confirmation =
+            self.pending_disable_skill_instance_confirmation.clone();
         let pending_remove_confirmation = self.pending_remove_confirmation.clone();
+        let skill_agent_filter = self.skill_agent_filter.clone();
+        let skill_scope_filter = self.skill_scope_filter.clone();
+        let skill_status_filter = self.skill_status_filter.clone();
         let pending_intents = self.pending_intents.clone();
         let skill_risk_reports = self.skill_risk_reports.clone();
         let selected_agent_after_save = match &intent {
             GuiActionIntent::AddCustomAgent { agent_id, .. }
-            | GuiActionIntent::UpdateAgentProjectSkillDirs { agent_id, .. } => {
-                Some(agent_id.clone())
-            }
+            | GuiActionIntent::UpdateAgentProjectSkillDirs { agent_id, .. }
+            | GuiActionIntent::ResetAgentProjectSkillDirs { agent_id } => Some(agent_id.clone()),
             _ => None,
         };
         let project_conflict_state = self
@@ -976,6 +1662,7 @@ impl GuiModel {
                     summary.path.clone(),
                     summary.pending_conflicts.clone(),
                     summary.skipped_conflicts.clone(),
+                    summary.discovered_skills.clone(),
                 )
             })
             .collect::<Vec<_>>();
@@ -989,9 +1676,15 @@ impl GuiModel {
                 return Err(error);
             }
         };
+        let selected_skill_after_install = match &outcome {
+            GuiControllerOutcome::SkillInstalled { skill_id, .. } => Some(skill_id.clone()),
+            _ => None,
+        };
         let success_message = self.intent_success_message(&intent, &outcome);
-        *self = Self::load(controller.paths())?;
-        for (path, pending_conflicts, skipped_conflicts) in project_conflict_state {
+        *self = controller.load_model()?;
+        for (path, pending_conflicts, skipped_conflicts, discovered_skills) in
+            project_conflict_state
+        {
             if let Some(summary) = self
                 .project_summaries
                 .iter_mut()
@@ -999,14 +1692,24 @@ impl GuiModel {
             {
                 summary.pending_conflicts = pending_conflicts;
                 summary.skipped_conflicts = skipped_conflicts;
+                if !discovered_skills.is_empty() && summary.discovered_skills.is_empty() {
+                    summary.discovered_skills = discovered_skills;
+                }
             }
         }
         self.active_view = active_view;
         self.active_scope = active_scope;
-        self.selected_skill = selected_skill.filter(|selected| {
-            self.skills
+        self.selected_skill = selected_skill_after_install
+            .or(selected_skill)
+            .filter(|selected| {
+                self.skills
+                    .iter()
+                    .any(|skill| skill.id.as_str() == selected.as_str())
+            });
+        self.selected_skill_instance = selected_skill_instance.filter(|selected| {
+            self.skill_instances
                 .iter()
-                .any(|skill| skill.id.as_str() == selected.as_str())
+                .any(|instance| instance.id == *selected)
         });
         self.selected_agent = selected_agent_after_save
             .or(selected_agent)
@@ -1024,11 +1727,30 @@ impl GuiModel {
                 .iter()
                 .any(|deployment| deployment.id == *selected)
         });
+        self.selected_discovered_project_skill =
+            selected_discovered_project_skill.filter(|selected| {
+                self.selected_project_summary().is_some_and(|summary| {
+                    summary.discovered_skills.iter().any(|skill| {
+                        skill.agent_id == selected.agent_id && skill.name == selected.skill_name
+                    })
+                })
+            });
+        self.pending_uninstall_confirmation = pending_uninstall_confirmation
+            .filter(|pending| self.skills.iter().any(|skill| skill.id == *pending));
+        self.pending_disable_skill_instance_confirmation =
+            pending_disable_skill_instance_confirmation.filter(|pending| {
+                self.skill_instances
+                    .iter()
+                    .any(|instance| instance.id == *pending)
+            });
         self.pending_remove_confirmation = pending_remove_confirmation.filter(|pending| {
             self.deployments
                 .iter()
                 .any(|deployment| deployment.id == *pending)
         });
+        self.skill_agent_filter = skill_agent_filter;
+        self.skill_scope_filter = skill_scope_filter;
+        self.skill_status_filter = skill_status_filter;
         self.pending_intents = pending_intents;
         self.skill_risk_reports = skill_risk_reports
             .into_iter()
@@ -1039,11 +1761,28 @@ impl GuiModel {
             })
             .collect();
         self.agent_editor_draft = None;
+        self.install_local_skill_draft = None;
+        self.open_project_draft = None;
+        let status_kind = match &outcome {
+            GuiControllerOutcome::AgentSkillsAdopted { failures, .. } if *failures > 0 => {
+                GuiStatusKind::Error
+            }
+            _ => GuiStatusKind::Success,
+        };
         self.last_status = Some(GuiStatus {
-            kind: GuiStatusKind::Success,
+            kind: status_kind,
             message: success_message,
         });
         self.apply_controller_outcome(outcome);
+        if let Some(selected) = &self.selected_discovered_project_skill {
+            if !self.selected_project_summary().is_some_and(|summary| {
+                summary.discovered_skills.iter().any(|skill| {
+                    skill.agent_id == selected.agent_id && skill.name == selected.skill_name
+                })
+            }) {
+                self.selected_discovered_project_skill = None;
+            }
+        }
         Ok(Some(intent))
     }
 
@@ -1053,6 +1792,57 @@ impl GuiModel {
         outcome: &GuiControllerOutcome,
     ) -> String {
         match intent {
+            GuiActionIntent::InstallLocalSkill { source_path } => {
+                let skill_name = source_path.file_name().unwrap_or("skill");
+                let summary = match outcome {
+                    GuiControllerOutcome::SkillInstalled { findings, .. } => GuiRiskReport {
+                        scanned_hash: String::new(),
+                        findings: findings.clone(),
+                    }
+                    .summary_label(),
+                    _ => "No findings".to_string(),
+                };
+                format!("Installed {skill_name}: {summary}.")
+            }
+            GuiActionIntent::ScanAgentSpaces => match outcome {
+                GuiControllerOutcome::AgentSpacesScanned { instances } => {
+                    format!(
+                        "Scanned Agent Spaces: {instances} instance{}.",
+                        if *instances == 1 { "" } else { "s" }
+                    )
+                }
+                _ => "Scanned Agent Spaces.".to_string(),
+            },
+            GuiActionIntent::ImportAllManagedCopies => match outcome {
+                GuiControllerOutcome::AgentSkillsAdopted {
+                    imported,
+                    conflicts,
+                    failures,
+                } => {
+                    let failure_summary = if *failures == 0 {
+                        String::new()
+                    } else {
+                        format!(
+                            ", {failures} failure{}",
+                            if *failures == 1 { "" } else { "s" }
+                        )
+                    };
+                    format!(
+                        "Imported Agent Skills into Managed Inventory: {imported} imported, {conflicts} conflict{}{failure_summary}.",
+                        if *conflicts == 1 { "" } else { "s" },
+                    )
+                }
+                _ => "Imported Agent Skills into Managed Inventory.".to_string(),
+            },
+            GuiActionIntent::ImportManagedCopy { instance_id } => {
+                let skill_name = self
+                    .skill_instances
+                    .iter()
+                    .find(|instance| instance.id == *instance_id)
+                    .map(|instance| instance.name.as_str())
+                    .unwrap_or(instance_id);
+                format!("Imported {skill_name} into Managed Inventory.")
+            }
             GuiActionIntent::ScanSkill { skill_id } => {
                 let skill_name = self
                     .skills
@@ -1077,7 +1867,7 @@ impl GuiModel {
                     .find(|skill| skill.id == *skill_id)
                     .map(|skill| skill.name.as_str())
                     .unwrap_or_else(|| skill_id.as_str());
-                format!("Uninstalled {skill_name} from Global Inventory.")
+                format!("Uninstalled managed copy {skill_name} from Managed Inventory.")
             }
             GuiActionIntent::DeploySkill {
                 project_path,
@@ -1114,6 +1904,24 @@ impl GuiModel {
                 self.agent_label(agent_id),
                 project_label(project_path)
             ),
+            GuiActionIntent::EnableSkillInstance { instance_id } => {
+                let skill_name = self
+                    .skill_instances
+                    .iter()
+                    .find(|instance| instance.id == *instance_id)
+                    .map(|instance| instance.name.as_str())
+                    .unwrap_or(instance_id);
+                format!("Enabled {skill_name} in Agent Space.")
+            }
+            GuiActionIntent::DisableSkillInstance { instance_id } => {
+                let skill_name = self
+                    .skill_instances
+                    .iter()
+                    .find(|instance| instance.id == *instance_id)
+                    .map(|instance| instance.name.as_str())
+                    .unwrap_or(instance_id);
+                format!("Disabled {skill_name} in Agent Space.")
+            }
             GuiActionIntent::RemoveDeployment {
                 project_path,
                 agent_id,
@@ -1153,6 +1961,11 @@ impl GuiModel {
                     project_label(project_path)
                 )
             }
+            GuiActionIntent::ProjectAdoptSelected {
+                project_path,
+                skill_name,
+                ..
+            } => format!("Adopted {skill_name} for {}.", project_label(project_path)),
             GuiActionIntent::ProjectImportConflictAsNew {
                 project_path,
                 skill_name,
@@ -1169,6 +1982,15 @@ impl GuiModel {
                     "Updated {} project Skill directories.",
                     self.agent_label(agent_id)
                 )
+            }
+            GuiActionIntent::ResetAgentProjectSkillDirs { agent_id } => {
+                format!(
+                    "Reset {} project Skill directories.",
+                    self.agent_label(agent_id)
+                )
+            }
+            GuiActionIntent::RemoveCustomAgent { agent_id } => {
+                format!("Removed custom Agent {}.", self.agent_label(agent_id))
             }
             GuiActionIntent::AddCustomAgent { label, .. } => {
                 format!("Added custom Agent {label}.")
@@ -1211,8 +2033,15 @@ impl GuiModel {
 
     fn apply_controller_outcome(&mut self, outcome: GuiControllerOutcome) {
         match outcome {
-            GuiControllerOutcome::None => {}
-            GuiControllerOutcome::SkillScan {
+            GuiControllerOutcome::None
+            | GuiControllerOutcome::AgentSpacesScanned { .. }
+            | GuiControllerOutcome::AgentSkillsAdopted { .. } => {}
+            GuiControllerOutcome::SkillInstalled {
+                skill_id,
+                scanned_hash,
+                findings,
+            }
+            | GuiControllerOutcome::SkillScan {
                 skill_id,
                 scanned_hash,
                 findings,
@@ -1230,6 +2059,7 @@ impl GuiModel {
             GuiControllerOutcome::ProjectScan {
                 project_path,
                 discovered_unmanaged_count,
+                discovered_skills,
                 adopt_result,
                 pending_conflicts,
                 preserve_existing_conflicts,
@@ -1261,9 +2091,15 @@ impl GuiModel {
                     } else {
                         pending_conflicts_minus_skipped(pending_conflicts, &skipped_conflicts)
                     };
+                    let discovered_skills = filter_discovered_skills(
+                        discovered_skills,
+                        &pending_conflicts,
+                        &skipped_conflicts,
+                    );
                     summary.deployment_count = deployment_count;
-                    summary.discovered_unmanaged_count =
-                        discovered_unmanaged_count.saturating_sub(skipped_conflicts.len());
+                    summary.onboarding_scanned = true;
+                    summary.discovered_unmanaged_count = discovered_skills.len();
+                    summary.discovered_skills = discovered_skills;
                     summary.last_adopt_all_result = adopt_result;
                     summary.pending_conflicts = pending_conflicts;
                     summary.skipped_conflicts = skipped_conflicts;
@@ -1275,12 +2111,45 @@ impl GuiModel {
                             .unwrap_or_else(|| project_path.to_string()),
                         path: project_path,
                         deployment_count,
-                        discovered_unmanaged_count,
+                        onboarding_scanned: true,
+                        discovered_unmanaged_count: discovered_skills.len(),
+                        discovered_skills,
                         last_adopt_all_result: adopt_result,
                         pending_conflicts,
                         skipped_conflicts: Vec::new(),
                     });
                 }
+            }
+            GuiControllerOutcome::ProjectOpened { project_path } => {
+                let deployment_count = self
+                    .deployments
+                    .iter()
+                    .filter(|deployment| deployment.project_path == project_path)
+                    .count();
+                if !self
+                    .project_summaries
+                    .iter()
+                    .any(|summary| summary.path == project_path)
+                {
+                    self.project_summaries.push(ProjectSummary {
+                        name: project_path
+                            .file_name()
+                            .map(ToOwned::to_owned)
+                            .unwrap_or_else(|| project_path.to_string()),
+                        path: project_path.clone(),
+                        deployment_count,
+                        onboarding_scanned: false,
+                        discovered_unmanaged_count: 0,
+                        discovered_skills: Vec::new(),
+                        last_adopt_all_result: None,
+                        pending_conflicts: Vec::new(),
+                        skipped_conflicts: Vec::new(),
+                    });
+                }
+                self.active_scope = GuiScope::Project(project_path.clone());
+                self.selected_project = Some(project_path);
+                self.selected_deployment = None;
+                self.pending_remove_confirmation = None;
             }
         }
     }
@@ -1302,6 +2171,18 @@ impl GuiModel {
         })
     }
 
+    pub fn select_skill_instance(&mut self, instance_id: String) {
+        self.selected_skill_instance = Some(instance_id);
+    }
+
+    pub fn selected_skill_instance(&self) -> Option<&SkillInstance> {
+        self.selected_skill_instance.as_ref().and_then(|selected| {
+            self.skill_instances
+                .iter()
+                .find(|instance| instance.id == *selected)
+        })
+    }
+
     pub fn selected_agent(&self) -> Option<&AgentConfig> {
         self.selected_agent.as_ref().and_then(|selected| {
             self.agents
@@ -1312,6 +2193,14 @@ impl GuiModel {
 
     pub fn agent_editor_draft(&self) -> Option<&AgentEditorDraft> {
         self.agent_editor_draft.as_ref()
+    }
+
+    pub fn install_local_skill_draft(&self) -> Option<&InstallLocalSkillDraft> {
+        self.install_local_skill_draft.as_ref()
+    }
+
+    pub fn open_project_draft(&self) -> Option<&OpenProjectDraft> {
+        self.open_project_draft.as_ref()
     }
 
     pub fn selected_project_summary(&self) -> Option<&ProjectSummary> {
@@ -1338,6 +2227,14 @@ impl GuiModel {
         })
     }
 
+    pub fn selected_discovered_project_skill(&self) -> Option<&ProjectDiscoveredSkill> {
+        let selected = self.selected_discovered_project_skill.as_ref()?;
+        self.selected_project_summary()?
+            .discovered_skills
+            .iter()
+            .find(|skill| skill.agent_id == selected.agent_id && skill.name == selected.skill_name)
+    }
+
     pub fn scope_project_path(&self) -> Option<Utf8PathBuf> {
         match &self.active_scope {
             GuiScope::GlobalInventory => self.selected_project.clone(),
@@ -1357,47 +2254,101 @@ impl Default for GuiModel {
             active_view: NavigationView::Dashboard,
             active_scope: GuiScope::GlobalInventory,
             dashboard: DashboardSummary {
+                agent_space_instance_count: 0,
                 managed_skill_count: 0,
                 agent_count: 0,
                 enabled_agent_count: 0,
                 recent_project_count: 0,
                 deployment_count: 0,
+                outdated_deployment_count: 0,
+                drifted_deployment_count: 0,
+                invalid_toggle_count: 0,
+                missing_managed_source_count: 0,
+                registry_health: HealthState::Ok,
+                lock_health: HealthState::Ok,
+                cache_health: HealthState::Ok,
+                risk_count: 0,
             },
             skills: Vec::new(),
+            skill_instances: Vec::new(),
             agents: Vec::new(),
             recent_projects: Vec::new(),
             project_summaries: Vec::new(),
             deployments: Vec::new(),
             deployment_statuses: Vec::new(),
             selected_skill: None,
+            selected_skill_instance: None,
             selected_agent: None,
             selected_project: None,
             selected_deployment: None,
+            pending_uninstall_confirmation: None,
+            pending_disable_skill_instance_confirmation: None,
             pending_remove_confirmation: None,
+            skill_agent_filter: None,
+            skill_scope_filter: None,
+            skill_status_filter: None,
+            selected_discovered_project_skill: None,
             pending_intents: Vec::new(),
             last_status: None,
             skill_risk_reports: Vec::new(),
             agent_editor_draft: None,
+            install_local_skill_draft: None,
+            open_project_draft: None,
         }
     }
 }
 
 fn action_label(intent: &GuiActionIntent) -> &'static str {
     match intent {
+        GuiActionIntent::InstallLocalSkill { .. } => "Install local Skill",
+        GuiActionIntent::ScanAgentSpaces => "Scan Agent Spaces",
+        GuiActionIntent::ImportAllManagedCopies => "Import all managed copies",
+        GuiActionIntent::ImportManagedCopy { .. } => "Import managed copy",
         GuiActionIntent::ScanSkill { .. } => "Scan",
         GuiActionIntent::UninstallSkill { .. } => "Uninstall",
         GuiActionIntent::DeploySkill { .. } => "Deploy",
         GuiActionIntent::EnableDeployment { .. } => "Enable",
         GuiActionIntent::DisableDeployment { .. } => "Disable",
+        GuiActionIntent::EnableSkillInstance { .. } => "Enable",
+        GuiActionIntent::DisableSkillInstance { .. } => "Disable",
         GuiActionIntent::RemoveDeployment { .. } => "Remove",
         GuiActionIntent::RedeployDeployment { .. } => "Redeploy",
         GuiActionIntent::RefreshProject { .. } => "Refresh",
         GuiActionIntent::ProjectAdoptAll { .. } => "Adopt all",
+        GuiActionIntent::ProjectAdoptSelected { .. } => "Adopt selected",
         GuiActionIntent::ProjectImportConflictAsNew { .. } => "Import as new",
         GuiActionIntent::OpenProject { .. } => "Open project",
         GuiActionIntent::UpdateAgentProjectSkillDirs { .. } => "Update Agent",
+        GuiActionIntent::ResetAgentProjectSkillDirs { .. } => "Reset Agent",
+        GuiActionIntent::RemoveCustomAgent { .. } => "Remove custom Agent",
         GuiActionIntent::AddCustomAgent { .. } => "Add custom Agent",
     }
+}
+
+fn filter_discovered_skills(
+    discovered_skills: Vec<ProjectDiscoveredSkill>,
+    pending_conflicts: &[ProjectConflict],
+    skipped_conflicts: &[ProjectConflict],
+) -> Vec<ProjectDiscoveredSkill> {
+    discovered_skills
+        .into_iter()
+        .filter(|skill| {
+            let key = skill.conflict_key();
+            pending_conflicts.contains(&key) || !skipped_conflicts.contains(&key)
+        })
+        .collect()
+}
+
+fn parse_discovered_project_row_id(row_id: &str) -> Option<ProjectConflict> {
+    let rest = row_id.strip_prefix("discovered:")?;
+    let (agent_id, skill_name) = rest.split_once(':')?;
+    if agent_id.is_empty() || skill_name.is_empty() {
+        return None;
+    }
+    Some(ProjectConflict {
+        agent_id: AgentId::new(agent_id),
+        skill_name: skill_name.to_string(),
+    })
 }
 
 fn parse_project_dir_text(value: &str) -> Vec<Utf8PathBuf> {
@@ -1471,5 +2422,45 @@ pub fn skill_source_label(source: &SkillSource) -> String {
             format!("Project adopt / {agent_id}")
         }
         SkillSource::PromotedFromProject { .. } => "Promoted".to_string(),
+    }
+}
+
+pub fn skill_instance_scope_label(scope: &SkillInstanceScope) -> String {
+    match scope {
+        SkillInstanceScope::Global => "Global".to_string(),
+        SkillInstanceScope::Project { name, .. } => format!("Project / {name}"),
+    }
+}
+
+pub fn skill_instance_scope_filter_label(scope: &SkillInstanceScope) -> String {
+    skill_instance_scope_label(scope)
+}
+
+pub fn skill_instance_status_label(instance: &SkillInstance) -> &'static str {
+    if !instance.writable
+        && matches!(
+            instance.toggle_state,
+            ToggleState::Enabled | ToggleState::Disabled
+        )
+    {
+        return "Read-only";
+    }
+    match instance.toggle_state {
+        ToggleState::Enabled => "Enabled",
+        ToggleState::Disabled => "Disabled",
+        ToggleState::InvalidBothPresent => "Invalid",
+        ToggleState::InvalidBothMissing => "Missing",
+    }
+}
+
+pub fn skill_instance_source_label(model: &GuiModel, instance: &SkillInstance) -> String {
+    match &instance.source_kind {
+        SkillInstanceSourceKind::AgentSpace => {
+            format!("{} global", model.agent_label(&instance.agent_id))
+        }
+        SkillInstanceSourceKind::ProjectDeployment => "Project".to_string(),
+        SkillInstanceSourceKind::PluginCache => "Plugin cache".to_string(),
+        SkillInstanceSourceKind::Vendor => "Vendor".to_string(),
+        SkillInstanceSourceKind::ManagedInventory => "Managed inventory".to_string(),
     }
 }
