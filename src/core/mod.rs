@@ -11,6 +11,7 @@ pub mod install;
 pub mod lock;
 pub mod onboarding;
 pub mod paths;
+pub mod plugins;
 pub mod project;
 pub mod registry;
 pub mod scan;

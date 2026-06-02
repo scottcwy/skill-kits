@@ -23,6 +23,16 @@ pub enum SkillKitsError {
         query: String,
         matches: Vec<SkillId>,
     },
+    #[error("Plugin not found: {query}")]
+    PluginNotFound { query: String },
+    #[error("ambiguous Plugin query {query}: {matches:?}")]
+    AmbiguousPlugin { query: String, matches: Vec<String> },
+    #[error("invalid Codex plugin config at {path}: {reason}")]
+    InvalidPluginConfig { path: Utf8PathBuf, reason: String },
+    #[error("plugin toggle blocked for {plugin_key}: {reason}")]
+    PluginToggleBlocked { plugin_key: String, reason: String },
+    #[error("{message}")]
+    InvalidNativeToggleTarget { message: String },
     #[error("Agent not found: {agent_id}")]
     AgentNotFound { agent_id: AgentId },
     #[error("Agent already configured: {agent_id}")]

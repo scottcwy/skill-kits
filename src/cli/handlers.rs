@@ -1,6 +1,7 @@
 use crate::cli::args::{
-    Cli, Command, InstallCommand, OutputFormat, ProjectAgentArgs, ProjectCommand,
-    ProjectRedeployArgs, ProjectRemoveArgs, ProjectSkillAgentArgs, ProjectStatusArgs,
+    Cli, Command, InstallCommand, ListKind, OutputFormat, PluginCommand, ProjectAgentArgs,
+    ProjectCommand, ProjectRedeployArgs, ProjectRemoveArgs, ProjectSkillAgentArgs,
+    ProjectStatusArgs,
 };
 use crate::cli::output::{format_table, to_json, TableColumn};
 use crate::core::adopt::AdoptReport;
@@ -15,6 +16,11 @@ use crate::core::doctor::{DoctorIssue, DoctorReport};
 use crate::core::error::SkillKitsError;
 use crate::core::ids::AgentId;
 use crate::core::paths::AppPaths;
+use crate::core::plugins::{
+    disable_plugin, enable_plugin, find_plugin_by_query, flattened_capabilities,
+    query_matches_plugin_capability, scan_plugin_packages, PluginPackage, PluginRuntimeCapability,
+    PluginStatus, RuntimeCapabilityKind,
+};
 use crate::core::project::{
     resolve_project_scope, ProjectDeployRequest,
     ProjectRedeployRequest as CoreProjectRedeployRequest,
@@ -54,7 +60,11 @@ pub fn exit_code_for_error(error: &SkillKitsError) -> i32 {
         | SkillKitsError::MissingManagedSource { .. }
         | SkillKitsError::UnsafeRemoveRequiresForce { .. }
         | SkillKitsError::InvalidToggleState { .. }
-        | SkillKitsError::AmbiguousSkill { .. } => 3,
+        | SkillKitsError::AmbiguousSkill { .. }
+        | SkillKitsError::AmbiguousPlugin { .. }
+        | SkillKitsError::InvalidPluginConfig { .. }
+        | SkillKitsError::PluginToggleBlocked { .. }
+        | SkillKitsError::InvalidNativeToggleTarget { .. } => 3,
         SkillKitsError::RegistryBusy => 4,
         _ => 1,
     }
@@ -99,7 +109,7 @@ fn execute(cli: Cli) -> CliResult<Option<String>> {
     match cli.command.unwrap_or(Command::Status {
         format: OutputFormat::Table,
     }) {
-        Command::List { format } => render_list(list_skill_instances(&app_paths)?, format),
+        Command::List { kind, format } => execute_list(&app_paths, kind, format),
         Command::Status { format } => {
             render_agent_space_status(agent_space_status(&app_paths)?, format)
         }
@@ -119,6 +129,21 @@ fn execute(cli: Cli) -> CliResult<Option<String>> {
             render_adopt(adopt_global_agent(&app_paths, global_agent)?)
         }
         Command::Project { command } => execute_project(&app_paths, command),
+        Command::Plugin { command } => execute_plugin(&app_paths, command),
+    }
+}
+
+fn execute_list(
+    app_paths: &AppPaths,
+    kind: ListKind,
+    format: OutputFormat,
+) -> CliResult<Option<String>> {
+    match kind {
+        ListKind::Skill => render_list(list_skill_instances(app_paths)?, format),
+        ListKind::Plugin => render_plugins(list_plugins(app_paths)?, format),
+        ListKind::RuntimeCapability => {
+            render_runtime_capabilities(list_runtime_capabilities(app_paths)?, format)
+        }
     }
 }
 
@@ -134,6 +159,23 @@ fn execute_project(app_paths: &AppPaths, command: ProjectCommand) -> CliResult<O
         ProjectCommand::Disable(args) => render_operation(project_disable(app_paths, args)?),
         ProjectCommand::Redeploy(args) => render_operation(project_redeploy(app_paths, args)?),
         ProjectCommand::Remove(args) => render_operation(project_remove(app_paths, args)?),
+    }
+}
+
+fn execute_plugin(app_paths: &AppPaths, command: PluginCommand) -> CliResult<Option<String>> {
+    match command {
+        PluginCommand::List { format } => render_plugins(list_plugins(app_paths)?, format),
+        PluginCommand::Status { query, format } => {
+            let plugins = list_plugins(app_paths)?;
+            render_plugins(vec![find_plugin_by_query(&plugins, &query)?], format)
+        }
+        PluginCommand::Enable { query } => {
+            render_operation(enable_plugin_command(app_paths, query)?)
+        }
+        PluginCommand::Disable { query } => {
+            render_operation(disable_plugin_command(app_paths, query)?)
+        }
+        PluginCommand::Scan { format } => render_plugins(list_plugins(app_paths)?, format),
     }
 }
 
@@ -168,6 +210,79 @@ fn render_list(instances: Vec<SkillInstance>, format: OutputFormat) -> CliResult
                     "Source",
                     "Skill Dir",
                     "Updated",
+                ],
+                &rows,
+            )))
+        }
+    }
+}
+
+fn render_plugins(plugins: Vec<PluginPackage>, format: OutputFormat) -> CliResult<Option<String>> {
+    match format {
+        OutputFormat::Json => Ok(Some(to_json(&plugins).map_err(general_io_error)?)),
+        OutputFormat::Table => {
+            let rows = plugins
+                .into_iter()
+                .map(|plugin| {
+                    vec![
+                        TableColumn::from(plugin.id),
+                        TableColumn::from(plugin.display_name),
+                        TableColumn::from(plugin.plugin_key),
+                        TableColumn::from(plugin.provider),
+                        TableColumn::from(plugin.agent_id.to_string()),
+                        TableColumn::from(plugin_status_label(&plugin.status)),
+                        TableColumn::from(capabilities_summary(&plugin.capabilities)),
+                        TableColumn::from(plugin.package_path.to_string()),
+                        TableColumn::from(plugin.updated_at.unwrap_or_else(|| "-".to_string())),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            Ok(Some(format_table(
+                &[
+                    "Plugin ID",
+                    "Plugin",
+                    "Plugin Key",
+                    "Provider",
+                    "Agent",
+                    "Status",
+                    "Capabilities",
+                    "Path",
+                    "Updated",
+                ],
+                &rows,
+            )))
+        }
+    }
+}
+
+fn render_runtime_capabilities(
+    capabilities: Vec<PluginRuntimeCapability>,
+    format: OutputFormat,
+) -> CliResult<Option<String>> {
+    match format {
+        OutputFormat::Json => Ok(Some(to_json(&capabilities).map_err(general_io_error)?)),
+        OutputFormat::Table => {
+            let rows = capabilities
+                .into_iter()
+                .map(|capability| {
+                    vec![
+                        TableColumn::from(capability.id),
+                        TableColumn::from(capability.parent_plugin_id),
+                        TableColumn::from(capability.name),
+                        TableColumn::from(runtime_kind_label(&capability.kind)),
+                        TableColumn::from(capability.path.to_string()),
+                        TableColumn::from(capability.read_only),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            Ok(Some(format_table(
+                &[
+                    "Capability ID",
+                    "Plugin ID",
+                    "Capability",
+                    "Kind",
+                    "Path",
+                    "Read-only",
                 ],
                 &rows,
             )))
@@ -405,7 +520,27 @@ struct AgentSpaceStatus {
 }
 
 fn list_skill_instances(app_paths: &AppPaths) -> crate::core::Result<Vec<SkillInstance>> {
-    Ok(read_skill_instance_index(app_paths)?.instances)
+    Ok(read_skill_instance_index(app_paths)?
+        .instances
+        .into_iter()
+        .filter(|instance| {
+            matches!(
+                instance.source_kind,
+                SkillInstanceSourceKind::AgentSpace | SkillInstanceSourceKind::ProjectAgentSpace
+            )
+        })
+        .collect())
+}
+
+fn list_plugins(app_paths: &AppPaths) -> crate::core::Result<Vec<PluginPackage>> {
+    let home = default_home_dir()?;
+    scan_plugin_packages(app_paths, &home)
+}
+
+fn list_runtime_capabilities(
+    app_paths: &AppPaths,
+) -> crate::core::Result<Vec<PluginRuntimeCapability>> {
+    Ok(flattened_capabilities(&list_plugins(app_paths)?))
 }
 
 fn agent_space_status(app_paths: &AppPaths) -> crate::core::Result<AgentSpaceStatus> {
@@ -492,22 +627,77 @@ fn uninstall_skill(app_paths: &AppPaths, query: String) -> crate::core::Result<O
 
 fn enable_instance(app_paths: &AppPaths, query: String) -> crate::core::Result<OperationMessage> {
     let home = default_home_dir()?;
-    let instance = enable_skill_instance_by_query(SkillInstanceQueryRequest {
+    let instance = match enable_skill_instance_by_query(SkillInstanceQueryRequest {
         app_paths,
         home_dir: &home,
         query: &query,
-    })?;
+    }) {
+        Ok(instance) => instance,
+        Err(SkillKitsError::SkillNotFound { .. }) => {
+            return reject_native_plugin_target(app_paths, &home, &query);
+        }
+        Err(error) => return Err(error),
+    };
     Ok(operation_status("enable", &instance.name))
 }
 
 fn disable_instance(app_paths: &AppPaths, query: String) -> crate::core::Result<OperationMessage> {
     let home = default_home_dir()?;
-    let instance = disable_skill_instance_by_query(SkillInstanceQueryRequest {
+    let instance = match disable_skill_instance_by_query(SkillInstanceQueryRequest {
         app_paths,
         home_dir: &home,
         query: &query,
-    })?;
+    }) {
+        Ok(instance) => instance,
+        Err(SkillKitsError::SkillNotFound { .. }) => {
+            return reject_native_plugin_target(app_paths, &home, &query);
+        }
+        Err(error) => return Err(error),
+    };
     Ok(operation_status("disable", &instance.name))
+}
+
+fn enable_plugin_command(
+    app_paths: &AppPaths,
+    query: String,
+) -> crate::core::Result<OperationMessage> {
+    let home = default_home_dir()?;
+    let plugin = enable_plugin(app_paths, &home, &query)?;
+    Ok(operation_status("plugin enable", &plugin.plugin_key))
+}
+
+fn disable_plugin_command(
+    app_paths: &AppPaths,
+    query: String,
+) -> crate::core::Result<OperationMessage> {
+    let home = default_home_dir()?;
+    let plugin = disable_plugin(app_paths, &home, &query)?;
+    Ok(operation_status("plugin disable", &plugin.plugin_key))
+}
+
+fn reject_native_plugin_target(
+    app_paths: &AppPaths,
+    home: &Utf8PathBuf,
+    query: &str,
+) -> crate::core::Result<OperationMessage> {
+    let plugins = scan_plugin_packages(app_paths, home)?;
+    if find_plugin_by_query(&plugins, query).is_ok() {
+        return Err(SkillKitsError::InvalidNativeToggleTarget {
+            message:
+                "This is a plugin package. Use skill-kits plugin enable or skill-kits plugin disable."
+                    .to_string(),
+        });
+    }
+    if query_matches_plugin_capability(&plugins, query) {
+        return Err(SkillKitsError::InvalidNativeToggleTarget {
+            message:
+                "This is a plugin-provided Skill. Disable or uninstall the parent plugin instead."
+                    .to_string(),
+        });
+    }
+    Err(SkillKitsError::SkillNotFound {
+        query: query.to_string(),
+    })
 }
 
 fn scan_skill(app_paths: &AppPaths, query: String) -> crate::core::Result<Vec<RiskFinding>> {
@@ -725,9 +915,55 @@ fn source_label(source: &SkillInstanceSourceKind) -> String {
     }
 }
 
+fn plugin_status_label(status: &PluginStatus) -> &'static str {
+    match status {
+        PluginStatus::Enabled => "Enabled",
+        PluginStatus::Disabled => "Disabled",
+        PluginStatus::Unknown => "Unknown",
+        PluginStatus::Invalid => "Invalid",
+    }
+}
+
+fn runtime_kind_label(kind: &RuntimeCapabilityKind) -> &'static str {
+    match kind {
+        RuntimeCapabilityKind::PluginProvidedSkill => "Skill",
+        RuntimeCapabilityKind::Command => "Command",
+        RuntimeCapabilityKind::Agent => "Agent",
+        RuntimeCapabilityKind::Asset => "Asset",
+        RuntimeCapabilityKind::App => "App",
+        RuntimeCapabilityKind::Unknown => "Unknown",
+    }
+}
+
+fn capabilities_summary(capabilities: &[PluginRuntimeCapability]) -> String {
+    if capabilities.is_empty() {
+        return "No capabilities".to_string();
+    }
+
+    let mut counts: std::collections::BTreeMap<&'static str, usize> =
+        std::collections::BTreeMap::new();
+    for capability in capabilities {
+        *counts
+            .entry(runtime_kind_label(&capability.kind))
+            .or_default() += 1;
+    }
+    ["Skill", "Command", "Agent", "Asset", "App", "Unknown"]
+        .into_iter()
+        .filter_map(|label| {
+            let count = counts.get(label)?;
+            let plural = if *count == 1 { "" } else { "s" };
+            Some(format!("{count} {label}{plural}"))
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{project_adopt, render_adopt, render_project_status, CliRunError};
+    use super::{
+        project_adopt, reject_native_plugin_target, render_adopt, render_project_status,
+        CliRunError,
+    };
     use crate::cli::args::{OutputFormat, ProjectAgentArgs};
     use crate::core::adopt::AdoptReport;
     use crate::core::agent_space::{SkillInstance, SkillInstanceScope, SkillInstanceSourceKind};
@@ -746,6 +982,11 @@ mod tests {
     fn write_skill(path: &Utf8Path, body: &str) {
         std::fs::create_dir_all(path).unwrap();
         std::fs::write(path.join("SKILL.md"), body).unwrap();
+    }
+
+    fn write_file(path: &Utf8Path, body: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
     }
 
     #[test]
@@ -861,5 +1102,34 @@ mod tests {
 
         assert!(output.contains("Skill Dir"));
         assert!(output.contains("/tmp/project/.agents/skills/frontend-design"));
+    }
+
+    #[test]
+    fn native_toggle_rejects_plugin_package_and_capability_with_guidance() {
+        let temp_dir = TempDir::new().unwrap();
+        let paths = test_paths(&temp_dir);
+        let home = Utf8PathBuf::from_path_buf(temp_dir.path().join("home")).unwrap();
+        let package = home.join(".codex/plugins/cache/openai-bundled/browser/1.0.0");
+        write_file(
+            &package.join(".codex-plugin/plugin.json"),
+            r#"{"name":"browser","display_name":"Browser"}"#,
+        );
+        write_skill(&package.join("skills/browser"), "# Browser Skill\n");
+
+        let package_error = reject_native_plugin_target(&paths, &home, "browser@openai-bundled")
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            package_error,
+            "This is a plugin package. Use skill-kits plugin enable or skill-kits plugin disable."
+        );
+
+        let capability_error = reject_native_plugin_target(&paths, &home, "Browser Skill")
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            capability_error,
+            "This is a plugin-provided Skill. Disable or uninstall the parent plugin instead."
+        );
     }
 }

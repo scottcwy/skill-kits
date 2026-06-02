@@ -22,6 +22,10 @@ use crate::core::{
         ProjectOnboardingScanRequest,
     },
     paths::AppPaths,
+    plugins::{
+        disable_plugin, enable_plugin, plugin_config_path, scan_plugin_packages, PluginPackage,
+        PluginRuntimeCapability, PluginStatus,
+    },
     project::{
         deploy_project_skill, disable_project_skill, enable_project_skill, redeploy_project_skill,
         remove_project_skill, resolve_project_scope, ProjectDeployRequest, ProjectRedeployRequest,
@@ -51,10 +55,17 @@ pub enum NavigationView {
     Skills,
     Agents,
     Projects,
+    Plugins,
 }
 
 impl NavigationView {
-    pub const ORDER: [Self; 4] = [Self::Dashboard, Self::Skills, Self::Agents, Self::Projects];
+    pub const ORDER: [Self; 5] = [
+        Self::Dashboard,
+        Self::Skills,
+        Self::Agents,
+        Self::Projects,
+        Self::Plugins,
+    ];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -62,6 +73,7 @@ impl NavigationView {
             Self::Skills => "Skill",
             Self::Agents => "Agent",
             Self::Projects => "Project",
+            Self::Plugins => "Plugins",
         }
     }
 }
@@ -78,6 +90,7 @@ pub enum GuiActionIntent {
         source_path: Utf8PathBuf,
     },
     ScanAgentSpaces,
+    ScanPlugins,
     ImportAllManagedCopies,
     ImportManagedCopy {
         instance_id: String,
@@ -108,6 +121,12 @@ pub enum GuiActionIntent {
     },
     DisableSkillInstance {
         instance_id: String,
+    },
+    EnablePlugin {
+        plugin_id: String,
+    },
+    DisablePlugin {
+        plugin_id: String,
     },
     RemoveDeployment {
         project_path: Utf8PathBuf,
@@ -169,6 +188,9 @@ pub enum GuiControllerOutcome {
     None,
     AgentSpacesScanned {
         instances: usize,
+    },
+    PluginsScanned {
+        plugins: usize,
     },
     AgentSkillsAdopted {
         imported: usize,
@@ -368,6 +390,11 @@ impl GuiController {
                     .len();
                 GuiControllerOutcome::AgentSpacesScanned { instances }
             }
+            GuiActionIntent::ScanPlugins => {
+                let home = self.home_dir.clone().map_or_else(default_home_dir, Ok)?;
+                let plugins = scan_plugin_packages(&self.paths, &home)?.len();
+                GuiControllerOutcome::PluginsScanned { plugins }
+            }
             GuiActionIntent::ImportAllManagedCopies => {
                 let home = self.home_dir.clone().map_or_else(default_home_dir, Ok)?;
                 let config = read_config(&self.paths)?;
@@ -519,6 +546,16 @@ impl GuiController {
                     home_dir: &home,
                     instance_id,
                 })?;
+                GuiControllerOutcome::None
+            }
+            GuiActionIntent::EnablePlugin { plugin_id } => {
+                let home = self.home_dir.clone().map_or_else(default_home_dir, Ok)?;
+                enable_plugin(&self.paths, &home, plugin_id)?;
+                GuiControllerOutcome::None
+            }
+            GuiActionIntent::DisablePlugin { plugin_id } => {
+                let home = self.home_dir.clone().map_or_else(default_home_dir, Ok)?;
+                disable_plugin(&self.paths, &home, plugin_id)?;
                 GuiControllerOutcome::None
             }
             GuiActionIntent::RemoveDeployment {
@@ -843,6 +880,7 @@ pub struct GuiModel {
     pub active_scope: GuiScope,
     pub dashboard: DashboardSummary,
     pub skill_instances: Vec<SkillInstance>,
+    pub plugins: Vec<PluginPackage>,
     pub skills: Vec<ManagedSkill>,
     pub agents: Vec<AgentConfig>,
     pub recent_projects: Vec<RecentProject>,
@@ -855,6 +893,8 @@ pub struct GuiModel {
     selected_project: Option<Utf8PathBuf>,
     selected_deployment: Option<String>,
     selected_discovered_project_skill: Option<ProjectConflict>,
+    selected_plugin: Option<String>,
+    selected_plugin_capability: Option<String>,
     pending_uninstall_confirmation: Option<SkillId>,
     pending_disable_skill_instance_confirmation: Option<String>,
     pending_remove_confirmation: Option<String>,
@@ -889,6 +929,7 @@ impl GuiModel {
             cached_index.instances
         };
         let skills = read_skills_registry(paths)?.skills;
+        let plugins = scan_plugin_packages(paths, &home_dir)?;
         let deployments = read_deployments_registry(paths)?.deployments;
         let deployment_statuses = Vec::new();
         let project_summaries = config
@@ -968,6 +1009,7 @@ impl GuiModel {
             active_scope: GuiScope::GlobalInventory,
             dashboard,
             skill_instances,
+            plugins,
             skills,
             agents: config.agents,
             recent_projects: config.recent_projects,
@@ -980,6 +1022,8 @@ impl GuiModel {
             selected_project,
             selected_deployment: None,
             selected_discovered_project_skill: None,
+            selected_plugin: None,
+            selected_plugin_capability: None,
             pending_uninstall_confirmation: None,
             pending_disable_skill_instance_confirmation: None,
             pending_remove_confirmation: None,
@@ -1045,6 +1089,24 @@ impl GuiModel {
         }
         self.selected_deployment = Some(deployment_id);
         self.selected_discovered_project_skill = None;
+    }
+
+    pub fn select_plugin(&mut self, plugin_id: String) {
+        self.selected_plugin = Some(plugin_id);
+        self.selected_plugin_capability = None;
+    }
+
+    pub fn select_plugin_capability(&mut self, capability_id: String) {
+        if let Some(parent_plugin_id) = self.plugins.iter().find_map(|plugin| {
+            plugin
+                .capabilities
+                .iter()
+                .any(|capability| capability.id == capability_id)
+                .then_some(plugin.id.clone())
+        }) {
+            self.selected_plugin = Some(parent_plugin_id);
+        }
+        self.selected_plugin_capability = Some(capability_id);
     }
 
     pub fn select_render_row(&mut self, row_id: &str) -> bool {
@@ -1113,6 +1175,22 @@ impl GuiModel {
                 } else {
                     false
                 }
+            }
+            NavigationView::Plugins => {
+                if self.plugins.iter().any(|plugin| plugin.id == row_id) {
+                    self.select_plugin(row_id.to_string());
+                    return true;
+                }
+                if self.plugins.iter().any(|plugin| {
+                    plugin
+                        .capabilities
+                        .iter()
+                        .any(|capability| capability.id == row_id)
+                }) {
+                    self.select_plugin_capability(row_id.to_string());
+                    return true;
+                }
+                false
             }
         }
     }
@@ -1215,6 +1293,7 @@ impl GuiModel {
         let mut options = self
             .skill_instances
             .iter()
+            .filter(|instance| is_native_skill_instance(instance))
             .map(|instance| {
                 let label = self
                     .agents
@@ -1234,6 +1313,7 @@ impl GuiModel {
         let mut options = self
             .skill_instances
             .iter()
+            .filter(|instance| is_native_skill_instance(instance))
             .map(|instance| skill_instance_scope_filter_label(&instance.scope))
             .collect::<Vec<_>>();
         options.sort();
@@ -1248,6 +1328,7 @@ impl GuiModel {
             .filter(|status| {
                 self.skill_instances
                     .iter()
+                    .filter(|instance| is_native_skill_instance(instance))
                     .any(|instance| skill_instance_status_label(instance) == *status)
             })
             .collect()
@@ -1284,6 +1365,10 @@ impl GuiModel {
 
     pub fn request_scan_agent_spaces(&mut self) -> Option<GuiActionIntent> {
         self.push_intent(GuiActionIntent::ScanAgentSpaces)
+    }
+
+    pub fn request_scan_plugins(&mut self) -> Option<GuiActionIntent> {
+        self.push_intent(GuiActionIntent::ScanPlugins)
     }
 
     pub fn request_import_selected_skill_instance_as_managed_copy(
@@ -1600,6 +1685,26 @@ impl GuiModel {
         self.request_disable_selected_skill_instance_with_confirmation(true)
     }
 
+    pub fn request_enable_selected_plugin(&mut self) -> Option<GuiActionIntent> {
+        let plugin = self.selected_plugin()?.clone();
+        if !plugin.can_toggle || plugin.status != PluginStatus::Disabled {
+            return None;
+        }
+        self.push_intent(GuiActionIntent::EnablePlugin {
+            plugin_id: plugin.id,
+        })
+    }
+
+    pub fn request_disable_selected_plugin(&mut self) -> Option<GuiActionIntent> {
+        let plugin = self.selected_plugin()?.clone();
+        if !plugin.can_toggle || plugin.status != PluginStatus::Enabled {
+            return None;
+        }
+        self.push_intent(GuiActionIntent::DisablePlugin {
+            plugin_id: plugin.id,
+        })
+    }
+
     pub fn request_disable_selected_skill_instance_with_confirmation(
         &mut self,
         confirmed: bool,
@@ -1691,6 +1796,8 @@ impl GuiModel {
         let selected_project = self.selected_project.clone();
         let selected_deployment = self.selected_deployment.clone();
         let selected_discovered_project_skill = self.selected_discovered_project_skill.clone();
+        let selected_plugin = self.selected_plugin.clone();
+        let selected_plugin_capability = self.selected_plugin_capability.clone();
         let pending_uninstall_confirmation = self.pending_uninstall_confirmation.clone();
         let pending_disable_skill_instance_confirmation =
             self.pending_disable_skill_instance_confirmation.clone();
@@ -1787,6 +1894,16 @@ impl GuiModel {
                     })
                 })
             });
+        self.selected_plugin = selected_plugin
+            .filter(|selected| self.plugins.iter().any(|plugin| plugin.id == *selected));
+        self.selected_plugin_capability = selected_plugin_capability.filter(|selected| {
+            self.plugins.iter().any(|plugin| {
+                plugin
+                    .capabilities
+                    .iter()
+                    .any(|capability| capability.id == *selected)
+            })
+        });
         self.pending_uninstall_confirmation = pending_uninstall_confirmation
             .filter(|pending| self.skills.iter().any(|skill| skill.id == *pending));
         self.pending_disable_skill_instance_confirmation =
@@ -1864,6 +1981,15 @@ impl GuiModel {
                     )
                 }
                 _ => "Scanned Agent Spaces.".to_string(),
+            },
+            GuiActionIntent::ScanPlugins => match outcome {
+                GuiControllerOutcome::PluginsScanned { plugins } => {
+                    format!(
+                        "Scanned Plugins: {plugins} plugin{}.",
+                        if *plugins == 1 { "" } else { "s" }
+                    )
+                }
+                _ => "Scanned Plugins.".to_string(),
             },
             GuiActionIntent::ImportAllManagedCopies => match outcome {
                 GuiControllerOutcome::AgentSkillsAdopted {
@@ -1973,6 +2099,24 @@ impl GuiModel {
                     .map(|instance| instance.name.as_str())
                     .unwrap_or(instance_id);
                 format!("Disabled {skill_name} in Agent Space.")
+            }
+            GuiActionIntent::EnablePlugin { plugin_id } => {
+                let plugin_name = self
+                    .plugins
+                    .iter()
+                    .find(|plugin| plugin.id == *plugin_id)
+                    .map(|plugin| plugin.display_name.as_str())
+                    .unwrap_or(plugin_id);
+                format!("Enabled plugin {plugin_name}.")
+            }
+            GuiActionIntent::DisablePlugin { plugin_id } => {
+                let plugin_name = self
+                    .plugins
+                    .iter()
+                    .find(|plugin| plugin.id == *plugin_id)
+                    .map(|plugin| plugin.display_name.as_str())
+                    .unwrap_or(plugin_id);
+                format!("Disabled plugin {plugin_name}.")
             }
             GuiActionIntent::RemoveDeployment {
                 project_path,
@@ -2087,6 +2231,7 @@ impl GuiModel {
         match outcome {
             GuiControllerOutcome::None
             | GuiControllerOutcome::AgentSpacesScanned { .. }
+            | GuiControllerOutcome::PluginsScanned { .. }
             | GuiControllerOutcome::AgentSkillsAdopted { .. } => {}
             GuiControllerOutcome::SkillInstalled {
                 skill_id,
@@ -2215,6 +2360,7 @@ impl GuiModel {
             NavigationView::Skills => crate::gui::skills::renderable(self),
             NavigationView::Agents => crate::gui::agents::renderable(self),
             NavigationView::Projects => crate::gui::projects::renderable(self),
+            NavigationView::Plugins => crate::gui::plugins::renderable(self),
         }
     }
 
@@ -2290,6 +2436,35 @@ impl GuiModel {
             .find(|skill| skill.agent_id == selected.agent_id && skill.name == selected.skill_name)
     }
 
+    pub fn selected_plugin(&self) -> Option<&PluginPackage> {
+        self.selected_plugin
+            .as_ref()
+            .and_then(|selected| self.plugins.iter().find(|plugin| plugin.id == *selected))
+    }
+
+    pub fn selected_plugin_capability(&self) -> Option<&PluginRuntimeCapability> {
+        self.selected_plugin_capability
+            .as_ref()
+            .and_then(|selected| {
+                self.plugins.iter().find_map(|plugin| {
+                    plugin
+                        .capabilities
+                        .iter()
+                        .find(|capability| capability.id == *selected)
+                })
+            })
+    }
+
+    pub fn codex_plugin_config_path(&self) -> Utf8PathBuf {
+        let home = self
+            .plugins
+            .first()
+            .and_then(|plugin| infer_home_from_plugin_path(&plugin.package_path))
+            .or_else(|| dirs::home_dir().and_then(|path| Utf8PathBuf::from_path_buf(path).ok()))
+            .unwrap_or_else(|| "~".into());
+        plugin_config_path(&home)
+    }
+
     pub fn scope_project_path(&self) -> Option<Utf8PathBuf> {
         match &self.active_scope {
             GuiScope::GlobalInventory => self.selected_project.clone(),
@@ -2322,6 +2497,7 @@ impl Default for GuiModel {
             },
             skills: Vec::new(),
             skill_instances: Vec::new(),
+            plugins: Vec::new(),
             agents: Vec::new(),
             recent_projects: Vec::new(),
             project_summaries: Vec::new(),
@@ -2332,6 +2508,8 @@ impl Default for GuiModel {
             selected_agent: None,
             selected_project: None,
             selected_deployment: None,
+            selected_plugin: None,
+            selected_plugin_capability: None,
             pending_uninstall_confirmation: None,
             pending_disable_skill_instance_confirmation: None,
             pending_remove_confirmation: None,
@@ -2353,6 +2531,7 @@ fn action_label(intent: &GuiActionIntent) -> &'static str {
     match intent {
         GuiActionIntent::InstallLocalSkill { .. } => "Install local Skill",
         GuiActionIntent::ScanAgentSpaces => "Scan Agent Spaces",
+        GuiActionIntent::ScanPlugins => "Scan Plugins",
         GuiActionIntent::ImportAllManagedCopies => "Import all managed copies",
         GuiActionIntent::ImportManagedCopy { .. } => "Import managed copy",
         GuiActionIntent::ScanSkill { .. } => "Scan",
@@ -2362,6 +2541,8 @@ fn action_label(intent: &GuiActionIntent) -> &'static str {
         GuiActionIntent::DisableDeployment { .. } => "Disable",
         GuiActionIntent::EnableSkillInstance { .. } => "Enable",
         GuiActionIntent::DisableSkillInstance { .. } => "Disable",
+        GuiActionIntent::EnablePlugin { .. } => "Enable Plugin",
+        GuiActionIntent::DisablePlugin { .. } => "Disable Plugin",
         GuiActionIntent::RemoveDeployment { .. } => "Remove",
         GuiActionIntent::RedeployDeployment { .. } => "Redeploy",
         GuiActionIntent::RefreshProject { .. } => "Refresh",
@@ -2416,6 +2597,12 @@ fn project_label(project_path: &camino::Utf8Path) -> String {
         .file_name()
         .map(ToString::to_string)
         .unwrap_or_else(|| project_path.to_string())
+}
+
+fn infer_home_from_plugin_path(path: &camino::Utf8Path) -> Option<Utf8PathBuf> {
+    let marker = "/.codex/plugins/cache/";
+    let index = path.as_str().find(marker)?;
+    Some(Utf8PathBuf::from(&path.as_str()[..index]))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2513,4 +2700,11 @@ pub fn skill_instance_source_label(model: &GuiModel, instance: &SkillInstance) -
         SkillInstanceSourceKind::PluginCache => "Plugin cache".to_string(),
         SkillInstanceSourceKind::Vendor => "Vendor".to_string(),
     }
+}
+
+pub(crate) fn is_native_skill_instance(instance: &SkillInstance) -> bool {
+    matches!(
+        instance.source_kind,
+        SkillInstanceSourceKind::AgentSpace | SkillInstanceSourceKind::ProjectAgentSpace
+    )
 }

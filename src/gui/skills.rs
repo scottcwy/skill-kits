@@ -3,8 +3,8 @@ use crate::core::{
     registry::ToggleState,
 };
 use crate::gui::state::{
-    skill_instance_scope_label, skill_instance_source_label, skill_instance_status_label, GuiModel,
-    InspectorSection, RenderRow, RenderableView,
+    is_native_skill_instance, skill_instance_scope_label, skill_instance_source_label,
+    skill_instance_status_label, GuiModel, InspectorSection, RenderRow, RenderableView,
 };
 
 pub fn view_name() -> &'static str {
@@ -15,6 +15,7 @@ pub fn renderable(model: &GuiModel) -> RenderableView {
     let main_rows = model
         .skill_instances
         .iter()
+        .filter(|instance| is_native_skill_instance(instance))
         .filter(|instance| matches_agent_filter(model, instance))
         .filter(|instance| matches_scope_filter(model, instance))
         .filter(|instance| matches_status_filter(model, instance))
@@ -49,7 +50,8 @@ pub fn renderable(model: &GuiModel) -> RenderableView {
         inspector_sections: inspector_sections(model),
         empty_message: model
             .skill_instances
-            .is_empty()
+            .iter()
+            .all(|instance| !is_native_skill_instance(instance))
             .then_some("No Agent Space Skills found. Scan enabled Agent directories."),
     }
 }
@@ -57,7 +59,13 @@ pub fn renderable(model: &GuiModel) -> RenderableView {
 fn inspector_sections(model: &GuiModel) -> Vec<InspectorSection> {
     let Some(instance) = model
         .selected_skill_instance()
-        .or_else(|| model.skill_instances.first())
+        .filter(|instance| is_native_skill_instance(instance))
+        .or_else(|| {
+            model
+                .skill_instances
+                .iter()
+                .find(|instance| is_native_skill_instance(instance))
+        })
     else {
         return vec![InspectorSection {
             title: "Empty".to_string(),
