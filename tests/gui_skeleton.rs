@@ -15,14 +15,15 @@ use skill_kits::core::{
 };
 use skill_kits::gui::state::{
     GuiActionIntent, GuiController, GuiModel, GuiScope, GuiStatusKind, NavigationView,
-    ProjectConflict, ProjectDiscoveredSkill, ProjectSummary, DRIFT_REMOVE_CONFIRMATION_MESSAGE,
-    GLOBAL_UNINSTALL_CONFIRMATION_MESSAGE,
+    ProjectConflict, ProjectDiscoveredSkill, ProjectSummary, UiColors,
+    DRIFT_REMOVE_CONFIRMATION_MESSAGE, GLOBAL_UNINSTALL_CONFIRMATION_MESSAGE,
 };
 use skill_kits::gui::{
-    agent_actions, inspector_line_presentation, native_options, path_validation_message,
-    plugin_actions, project_actions, skill_actions, workbench_cell_style,
-    workbench_row_accepts_keyboard_key, AgentAction, InspectorLineKind, InspectorLinePresentation,
-    PathFieldKind, PluginAction, ProjectAction, SkillAction, SkillKitsGuiApp, WorkbenchCellStyle,
+    agent_actions, icons, inspector_line_presentation, native_options, path_validation_message,
+    plugin_actions, project_actions, sidebar_nav_label, skill_actions, status_badge_fill,
+    workbench_cell_style, workbench_row_accepts_keyboard_key, workbench_row_fill, AgentAction,
+    InspectorLineKind, InspectorLinePresentation, PathFieldKind, PluginAction, ProjectAction,
+    SkillAction, SkillKitsGuiApp, WorkbenchCellStyle, SIDEBAR_NAV_ROW_HEIGHT, SIDEBAR_WIDTH,
 };
 use tempfile::TempDir;
 
@@ -165,6 +166,49 @@ fn section_lines(model: &GuiModel, title: &str) -> Vec<String> {
         .find(|section| section.title == title)
         .unwrap_or_else(|| panic!("missing {title} inspector section"))
         .lines
+}
+
+#[test]
+fn gui_icons_map_navigation_actions_and_status_without_mixing_plugin_toggles() {
+    assert_eq!(
+        icons::navigation_icon(NavigationView::Dashboard),
+        icons::DASHBOARD
+    );
+    assert_eq!(icons::navigation_icon(NavigationView::Skills), icons::SKILL);
+    assert_eq!(icons::navigation_icon(NavigationView::Agents), icons::AGENT);
+    assert_eq!(
+        icons::navigation_icon(NavigationView::Projects),
+        icons::PROJECT
+    );
+
+    assert_eq!(
+        icons::skill_action_icon(SkillAction::ScanAgentSpaces),
+        icons::SCAN
+    );
+    assert_eq!(
+        icons::skill_action_icon(SkillAction::Enable),
+        icons::ENABLE_SKILL
+    );
+    assert_eq!(
+        icons::skill_action_icon(SkillAction::Disable),
+        icons::DISABLE_SKILL
+    );
+    assert_ne!(icons::ENABLE_SKILL, icons::ENABLE_PLUGIN);
+    assert_ne!(icons::DISABLE_SKILL, icons::DISABLE_PLUGIN);
+
+    assert_eq!(icons::status_icon("Enabled"), icons::STATUS_ENABLED);
+    assert_eq!(icons::status_icon("Disabled"), icons::STATUS_DISABLED);
+    assert_eq!(icons::status_icon("Invalid"), icons::STATUS_INVALID);
+    assert_eq!(
+        icons::status_icon("Missing managed source"),
+        icons::STATUS_INVALID
+    );
+    assert_eq!(icons::status_icon("Read-only"), icons::READ_ONLY);
+
+    assert_eq!(
+        icons::button_label(icons::REFRESH, "Refresh"),
+        "\u{f021} Refresh"
+    );
 }
 
 #[test]
@@ -906,6 +950,43 @@ fn plugins_view_offers_enable_for_disabled_package() {
         Some(GuiActionIntent::EnablePlugin {
             plugin_id: row_id.clone()
         })
+    );
+}
+
+#[test]
+fn workbench_grid_polish_helpers_keep_navigation_and_hover_states_stable() {
+    let colors = UiColors::dark();
+
+    assert_eq!(SIDEBAR_WIDTH, 244.0);
+    assert_eq!(SIDEBAR_NAV_ROW_HEIGHT, 36.0);
+    assert_eq!(
+        sidebar_nav_label(NavigationView::Skills),
+        icons::button_label(icons::SKILL, "Skill")
+    );
+    assert_eq!(
+        sidebar_nav_label(NavigationView::Plugins),
+        icons::button_label(icons::PLUGIN, "Plugins")
+    );
+
+    assert_eq!(
+        workbench_row_fill(false, false, colors),
+        egui::Color32::TRANSPARENT
+    );
+    assert_eq!(workbench_row_fill(false, true, colors), colors.surface_2);
+    assert_eq!(workbench_row_fill(true, false, colors), colors.surface_3);
+    assert_eq!(workbench_row_fill(true, true, colors), colors.surface_3);
+
+    assert_eq!(
+        status_badge_fill("Enabled", false, false, colors),
+        colors.surface_2
+    );
+    assert_eq!(
+        status_badge_fill("Read-only", false, false, colors),
+        colors.surface_1
+    );
+    assert_eq!(
+        status_badge_fill("Read-only", true, false, colors),
+        colors.surface_2
     );
 }
 

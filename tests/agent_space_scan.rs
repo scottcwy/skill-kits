@@ -311,11 +311,7 @@ fn built_in_codex_scan_defaults_to_native_agent_space_roots_only() {
     let vendor_skill = home.join(".codex/vendor_imports/skills/skills/.curated/vendor-skill");
     write_skill_file(&vendor_skill, "SKILL.md", "# Vendor Skill\n");
     let skills_manager_skill = home.join(".skills-manager/skills/manager-only-skill");
-    write_skill_file(
-        &skills_manager_skill,
-        "SKILL.md",
-        "# Manager Only Skill\n",
-    );
+    write_skill_file(&skills_manager_skill, "SKILL.md", "# Manager Only Skill\n");
 
     let instances = scan_agent_spaces(&paths, &home).unwrap();
 
