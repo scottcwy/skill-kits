@@ -17,6 +17,8 @@ pub struct Cli {
 #[derive(Clone, Debug, Subcommand)]
 pub enum Command {
     List {
+        #[arg(long, value_enum, default_value_t = ListKind::Skill)]
+        kind: ListKind,
         #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
         format: OutputFormat,
     },
@@ -54,6 +56,10 @@ pub enum Command {
         #[command(subcommand)]
         command: ProjectCommand,
     },
+    Plugin {
+        #[command(subcommand)]
+        command: PluginCommand,
+    },
 }
 
 #[derive(Clone, Debug, Subcommand)]
@@ -70,6 +76,29 @@ pub enum ProjectCommand {
     Disable(ProjectSkillAgentArgs),
     Redeploy(ProjectRedeployArgs),
     Remove(ProjectRemoveArgs),
+}
+
+#[derive(Clone, Debug, Subcommand)]
+pub enum PluginCommand {
+    List {
+        #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+        format: OutputFormat,
+    },
+    Status {
+        query: String,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+        format: OutputFormat,
+    },
+    Enable {
+        query: String,
+    },
+    Disable {
+        query: String,
+    },
+    Scan {
+        #[arg(long, value_enum, default_value_t = OutputFormat::Table)]
+        format: OutputFormat,
+    },
 }
 
 #[derive(Clone, Debug, Args)]
@@ -131,4 +160,11 @@ pub struct ProjectRemoveArgs {
 pub enum OutputFormat {
     Table,
     Json,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum ListKind {
+    Skill,
+    Plugin,
+    RuntimeCapability,
 }

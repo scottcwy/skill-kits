@@ -1,5 +1,6 @@
 pub mod agents;
 pub mod dashboard;
+pub mod plugins;
 pub mod projects;
 pub mod skills;
 pub mod state;
@@ -23,6 +24,13 @@ const INSPECTOR_CONTROLS_HEIGHT: f32 = 184.0;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SkillAction {
     ScanAgentSpaces,
+    Enable,
+    Disable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PluginAction {
+    ScanPlugins,
     Enable,
     Disable,
 }
@@ -123,6 +131,16 @@ impl SkillAction {
     }
 }
 
+impl PluginAction {
+    fn label(self) -> &'static str {
+        match self {
+            Self::ScanPlugins => "Scan Plugins",
+            Self::Enable => "Enable Plugin",
+            Self::Disable => "Disable Plugin",
+        }
+    }
+}
+
 pub fn skill_actions(model: &GuiModel) -> Vec<SkillAction> {
     let mut actions = vec![SkillAction::ScanAgentSpaces];
     if model.selected_skill_instance().is_none() {
@@ -169,13 +187,38 @@ pub fn project_actions(model: &GuiModel) -> Vec<ProjectAction> {
     actions
 }
 
+pub fn plugin_actions(model: &GuiModel) -> Vec<PluginAction> {
+    let mut actions = vec![PluginAction::ScanPlugins];
+    if model.selected_plugin_capability().is_some() {
+        return actions;
+    }
+    let Some(plugin) = model.selected_plugin() else {
+        return actions;
+    };
+    if plugin.can_toggle {
+        match plugin.status {
+            crate::core::plugins::PluginStatus::Enabled => actions.push(PluginAction::Disable),
+            crate::core::plugins::PluginStatus::Disabled => actions.push(PluginAction::Enable),
+            crate::core::plugins::PluginStatus::Unknown
+            | crate::core::plugins::PluginStatus::Invalid => {}
+        }
+    }
+    actions
+}
+
 pub fn workbench_cell_style(column: &str) -> WorkbenchCellStyle {
     match column {
         "Status" | "Toggle" | "Validation" | "Enabled" | "Writable" | "Managed" | "Source"
-        | "Outdated" | "Drift" | "Risk" => WorkbenchCellStyle::StatusBadge,
-        "Path" | "Project skill directories" | "Skill ID" | "Instance ID" | "Hash" | "Command" => {
-            WorkbenchCellStyle::Mono
-        }
+        | "Outdated" | "Drift" | "Risk" | "Read-only" => WorkbenchCellStyle::StatusBadge,
+        "Path"
+        | "Project skill directories"
+        | "Skill ID"
+        | "Instance ID"
+        | "Plugin ID"
+        | "Plugin Key"
+        | "Capability ID"
+        | "Hash"
+        | "Command" => WorkbenchCellStyle::Mono,
         _ => WorkbenchCellStyle::Text,
     }
 }
@@ -232,6 +275,12 @@ pub fn inspector_line_presentation(line: &str) -> InspectorLinePresentation {
         "Kind",
         "Title",
         "Description",
+        "Plugin id",
+        "Plugin key",
+        "Capability id",
+        "Config path",
+        "Package path",
+        "Manifest path",
         "Lock",
         "Cache",
     ];
@@ -255,10 +304,10 @@ pub fn inspector_line_presentation(line: &str) -> InspectorLinePresentation {
 
 fn inspector_line_kind(label: &str, value: &str) -> InspectorLineKind {
     match label {
-        "Skill dir" | "Enabled" | "Disabled" | "Project dir" | "Project path" => {
-            InspectorLineKind::Path
-        }
-        "Instance ID" | "Agent id" | "Content hash" | "Scanned hash" => InspectorLineKind::Mono,
+        "Skill dir" | "Enabled" | "Disabled" | "Project dir" | "Project path" | "Config path"
+        | "Package path" | "Manifest path" => InspectorLineKind::Path,
+        "Instance ID" | "Agent id" | "Content hash" | "Scanned hash" | "Plugin id"
+        | "Plugin key" | "Capability id" => InspectorLineKind::Mono,
         "Status"
         | "Writable"
         | "Managed"
@@ -768,6 +817,14 @@ fn is_render_row_selected(model: &GuiModel, view: NavigationView, row_id: &str) 
                     .selected_deployment()
                     .is_some_and(|deployment| deployment.id == row_id)
         }
+        NavigationView::Plugins => {
+            model
+                .selected_plugin()
+                .is_some_and(|plugin| plugin.id == row_id)
+                || model
+                    .selected_plugin_capability()
+                    .is_some_and(|capability| capability.id == row_id)
+        }
     }
 }
 
@@ -1033,8 +1090,42 @@ fn render_action_controls(ui: &mut egui::Ui, model: &mut GuiModel, colors: UiCol
         NavigationView::Agents => {
             render_agent_editor_controls(ui, model, colors);
         }
+        NavigationView::Plugins => {
+            render_plugin_controls(ui, model, colors);
+        }
         NavigationView::Dashboard => {}
     }
+}
+
+fn render_plugin_action_button(
+    ui: &mut egui::Ui,
+    model: &mut GuiModel,
+    _colors: UiColors,
+    action: PluginAction,
+) {
+    if !ui.button(action.label()).clicked() {
+        return;
+    }
+
+    match action {
+        PluginAction::ScanPlugins => {
+            let _ = model.request_scan_plugins();
+        }
+        PluginAction::Enable => {
+            let _ = model.request_enable_selected_plugin();
+        }
+        PluginAction::Disable => {
+            let _ = model.request_disable_selected_plugin();
+        }
+    }
+}
+
+fn render_plugin_controls(ui: &mut egui::Ui, model: &mut GuiModel, colors: UiColors) {
+    ui.horizontal(|ui| {
+        for action in plugin_actions(model) {
+            render_plugin_action_button(ui, model, colors, action);
+        }
+    });
 }
 
 fn render_skill_action_button(

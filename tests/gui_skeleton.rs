@@ -20,9 +20,9 @@ use skill_kits::gui::state::{
 };
 use skill_kits::gui::{
     agent_actions, inspector_line_presentation, native_options, path_validation_message,
-    project_actions, skill_actions, workbench_cell_style, workbench_row_accepts_keyboard_key,
-    AgentAction, InspectorLineKind, InspectorLinePresentation, PathFieldKind, ProjectAction,
-    SkillAction, SkillKitsGuiApp, WorkbenchCellStyle,
+    plugin_actions, project_actions, skill_actions, workbench_cell_style,
+    workbench_row_accepts_keyboard_key, AgentAction, InspectorLineKind, InspectorLinePresentation,
+    PathFieldKind, PluginAction, ProjectAction, SkillAction, SkillKitsGuiApp, WorkbenchCellStyle,
 };
 use tempfile::TempDir;
 
@@ -100,6 +100,26 @@ fn deployment(project: &camino::Utf8Path) -> DeploymentRecord {
 fn write_skill(path: &camino::Utf8Path, body: &str) {
     std::fs::create_dir_all(path).unwrap();
     std::fs::write(path.join("SKILL.md"), body).unwrap();
+}
+
+fn write_file(path: &camino::Utf8Path, body: &str) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, body).unwrap();
+}
+
+fn write_plugin_package(
+    home: &camino::Utf8Path,
+    provider: &str,
+    name: &str,
+    version: &str,
+    display_name: &str,
+) -> Utf8PathBuf {
+    let package = home.join(format!(".codex/plugins/cache/{provider}/{name}/{version}"));
+    write_file(
+        &package.join(".codex-plugin/plugin.json"),
+        &format!(r#"{{"name":"{name}","display_name":"{display_name}","version":"{version}"}}"#),
+    );
+    package
 }
 
 fn write_global_codex_skill(temp_dir: &TempDir, name: &str, body: &str) -> Utf8PathBuf {
@@ -250,7 +270,7 @@ fn skill_instance_actions_toggle_selected_agent_space_file_only() {
 }
 
 #[test]
-fn read_only_skill_instances_do_not_offer_toggle_actions() {
+fn plugin_cache_skill_instances_are_hidden_from_native_skill_view() {
     let temp_dir = TempDir::new().unwrap();
     let paths = test_paths(&temp_dir);
     let home = Utf8PathBuf::from_path_buf(temp_dir.path().to_path_buf()).unwrap();
@@ -272,17 +292,13 @@ fn read_only_skill_instances_do_not_offer_toggle_actions() {
     .unwrap();
     write_skills_registry(&paths, &SkillsRegistry::default()).unwrap();
     write_deployments_registry(&paths, &DeploymentsRegistry::default()).unwrap();
-    let skill_dir = home.join(".codex/plugins/cache/openai/browser/skills/browser-skill");
+    let skill_dir = home.join(".codex/plugins/cache/openai/browser/1.0.0/skills/browser-skill");
     write_skill(&skill_dir, "# Browser Skill\n");
 
     let mut model = GuiModel::load_with_home_dir(&paths, home).unwrap();
     model.navigate(NavigationView::Skills);
-    let row_id = model.renderable_view().main_rows[0].id.clone();
-    assert!(model.select_render_row(&row_id));
-
+    assert!(model.renderable_view().main_rows.is_empty());
     assert_eq!(skill_actions(&model), vec![SkillAction::ScanAgentSpaces]);
-    assert_eq!(model.request_disable_selected_skill_instance(), None);
-    assert_eq!(model.request_enable_selected_skill_instance(), None);
 }
 
 #[test]
@@ -632,7 +648,7 @@ fn skills_inspector_includes_risk_findings_and_project_deployment_links_when_ava
 }
 
 #[test]
-fn skills_inspector_names_invalid_and_read_only_states_explicitly() {
+fn skills_inspector_names_invalid_state_explicitly_and_hides_plugin_cache_rows() {
     let temp_dir = TempDir::new().unwrap();
     let paths = test_paths(&temp_dir);
     let home = Utf8PathBuf::from_path_buf(temp_dir.path().to_path_buf()).unwrap();
@@ -644,10 +660,7 @@ fn skills_inspector_names_invalid_and_read_only_states_explicitly() {
                 id: AgentId::new("codex"),
                 label: "Codex".to_string(),
                 kind: AgentKind::BuiltIn,
-                global_skill_dirs: vec![
-                    "~/.codex/skills".into(),
-                    "~/.codex/plugins/cache".into(),
-                ],
+                global_skill_dirs: vec!["~/.codex/skills".into(), "~/.codex/plugins/cache".into()],
                 project_skill_dirs: vec![".agents/skills".into()],
                 enabled: true,
             }],
@@ -661,7 +674,7 @@ fn skills_inspector_names_invalid_and_read_only_states_explicitly() {
     let invalid = home.join(".codex/skills/invalid-skill");
     write_skill(&invalid, "# Enabled side\n");
     std::fs::write(invalid.join("SKILL.md.disabled"), "# Disabled side\n").unwrap();
-    let read_only = home.join(".codex/plugins/cache/openai/browser/skills/browser-skill");
+    let read_only = home.join(".codex/plugins/cache/openai/browser/1.0.0/skills/browser-skill");
     write_skill(&read_only, "# Browser Skill\n");
 
     let mut model = GuiModel::load_with_home_dir(&paths, home).unwrap();
@@ -678,17 +691,11 @@ fn skills_inspector_names_invalid_and_read_only_states_explicitly() {
     assert!(section_lines(&model, "State")
         .contains(&"Invalid: both SKILL.md and SKILL.md.disabled are present.".to_string()));
 
-    let read_only_row_id = model
+    assert!(model
         .renderable_view()
         .main_rows
         .iter()
-        .find(|row| row.cells[0] == "Browser Skill")
-        .unwrap()
-        .id
-        .clone();
-    assert!(model.select_render_row(&read_only_row_id));
-    assert!(section_lines(&model, "State")
-        .contains(&"Read-only: plugin/cache/vendor sources cannot be toggled here.".to_string()));
+        .all(|row| row.cells[0] != "Browser Skill"));
 }
 
 #[test]
@@ -783,6 +790,7 @@ fn navigation_titles_match_frozen_agent_space_shape() {
     assert_eq!(NavigationView::Skills.title(), "Skill");
     assert_eq!(NavigationView::Agents.title(), "Agent");
     assert_eq!(NavigationView::Projects.title(), "Project");
+    assert_eq!(NavigationView::Plugins.title(), "Plugins");
 
     let mut model = GuiModel::default();
     for (view, title) in [
@@ -790,10 +798,115 @@ fn navigation_titles_match_frozen_agent_space_shape() {
         (NavigationView::Skills, "Skill"),
         (NavigationView::Agents, "Agent"),
         (NavigationView::Projects, "Project"),
+        (NavigationView::Plugins, "Plugins"),
     ] {
         model.navigate(view);
         assert_eq!(model.renderable_view().title, title);
     }
+}
+
+#[test]
+fn plugins_view_lists_packages_and_read_only_capabilities() {
+    let temp_dir = TempDir::new().unwrap();
+    let paths = test_paths(&temp_dir);
+    let home = Utf8PathBuf::from_path_buf(temp_dir.path().to_path_buf()).unwrap();
+    ensure_app_dirs(&paths).unwrap();
+    write_config(&paths, &Config::default()).unwrap();
+    write_skills_registry(&paths, &SkillsRegistry::default()).unwrap();
+    write_deployments_registry(&paths, &DeploymentsRegistry::default()).unwrap();
+    let package = write_plugin_package(&home, "openai-curated", "github", "1.0.0", "GitHub Tools");
+    write_file(
+        &package.join("skills/github/SKILL.md"),
+        "+++\ntitle = \"GitHub Skill\"\ndescription = \"Works with GitHub.\"\n+++\n",
+    );
+    write_file(&package.join("commands/review.md"), "# Review\n");
+
+    let mut model = GuiModel::load_with_home_dir(&paths, home).unwrap();
+    model.navigate(NavigationView::Plugins);
+    let renderable = model.renderable_view();
+
+    assert_eq!(
+        renderable.columns,
+        vec![
+            "Plugin",
+            "Provider",
+            "Agent",
+            "Status",
+            "Capabilities",
+            "Path",
+            "Updated"
+        ]
+    );
+    assert_eq!(
+        renderable
+            .main_rows
+            .iter()
+            .map(|row| row.cells[0].as_str())
+            .collect::<Vec<_>>(),
+        vec!["GitHub Tools", "GitHub Skill", "review"]
+    );
+
+    let package_row_id = renderable.main_rows[0].id.clone();
+    assert!(model.select_render_row(&package_row_id));
+    assert_eq!(
+        plugin_actions(&model),
+        vec![PluginAction::ScanPlugins, PluginAction::Disable]
+    );
+    let summary = section_lines(&model, "Summary");
+    assert!(summary.contains(&"Plugin key github@openai-curated".to_string()));
+    let config = section_lines(&model, "Config");
+    assert!(config.iter().any(|line| line.starts_with("Config path ")));
+    assert!(config.contains(
+        &"This plugin is managed through Codex plugin configuration. Skill-kits does not modify plugin package contents."
+            .to_string()
+    ));
+
+    let capability_row_id = model
+        .renderable_view()
+        .main_rows
+        .iter()
+        .find(|row| row.cells[0] == "GitHub Skill")
+        .unwrap()
+        .id
+        .clone();
+    assert!(model.select_render_row(&capability_row_id));
+    assert_eq!(plugin_actions(&model), vec![PluginAction::ScanPlugins]);
+    assert!(section_lines(&model, "State").contains(
+        &"This Skill is bundled by a Codex plugin. It is not a native Agent Space Skill and cannot be enabled or disabled by renaming SKILL.md."
+            .to_string()
+    ));
+}
+
+#[test]
+fn plugins_view_offers_enable_for_disabled_package() {
+    let temp_dir = TempDir::new().unwrap();
+    let paths = test_paths(&temp_dir);
+    let home = Utf8PathBuf::from_path_buf(temp_dir.path().to_path_buf()).unwrap();
+    ensure_app_dirs(&paths).unwrap();
+    write_config(&paths, &Config::default()).unwrap();
+    write_skills_registry(&paths, &SkillsRegistry::default()).unwrap();
+    write_deployments_registry(&paths, &DeploymentsRegistry::default()).unwrap();
+    write_plugin_package(&home, "openai-bundled", "browser", "1.0.0", "Browser");
+    write_file(
+        &home.join(".codex/config.toml"),
+        "[plugins.\"browser@openai-bundled\"]\nenabled = false\n",
+    );
+
+    let mut model = GuiModel::load_with_home_dir(&paths, home).unwrap();
+    model.navigate(NavigationView::Plugins);
+    let row_id = model.renderable_view().main_rows[0].id.clone();
+    assert!(model.select_render_row(&row_id));
+
+    assert_eq!(
+        plugin_actions(&model),
+        vec![PluginAction::ScanPlugins, PluginAction::Enable]
+    );
+    assert_eq!(
+        model.request_enable_selected_plugin(),
+        Some(GuiActionIntent::EnablePlugin {
+            plugin_id: row_id.clone()
+        })
+    );
 }
 
 #[test]

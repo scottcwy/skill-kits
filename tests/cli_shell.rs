@@ -2,8 +2,8 @@ use assert_cmd::Command as AssertCommand;
 use clap::Parser;
 use serde::Serialize;
 use skill_kits::cli::args::{
-    Cli, Command, InstallCommand, OutputFormat, ProjectCommand, ProjectRedeployArgs,
-    ProjectRemoveArgs, ProjectSkillAgentArgs, ProjectStatusArgs,
+    Cli, Command, InstallCommand, ListKind, OutputFormat, PluginCommand, ProjectCommand,
+    ProjectRedeployArgs, ProjectRemoveArgs, ProjectSkillAgentArgs, ProjectStatusArgs,
 };
 use skill_kits::cli::handlers::exit_code_for_error;
 use skill_kits::cli::output::{format_table, TableColumn};
@@ -29,6 +29,7 @@ fn clap_parses_documented_commands() {
     assert!(matches!(
         Cli::parse_from(["skill-kits", "list"]).command,
         Some(Command::List {
+            kind: ListKind::Skill,
             format: OutputFormat::Table
         })
     ));
@@ -70,6 +71,66 @@ fn clap_parses_documented_commands() {
     assert!(matches!(
         Cli::parse_from(["skill-kits", "adopt", "--global-agent", "codex"]).command,
         Some(Command::Adopt { global_agent }) if global_agent == "codex"
+    ));
+}
+
+#[test]
+fn clap_parses_plugin_list_kinds_and_commands() {
+    assert!(matches!(
+        Cli::parse_from(["skill-kits", "list", "--kind", "plugin"]).command,
+        Some(Command::List {
+            kind: ListKind::Plugin,
+            format: OutputFormat::Table
+        })
+    ));
+    assert!(matches!(
+        Cli::parse_from([
+            "skill-kits",
+            "list",
+            "--kind",
+            "runtime-capability",
+            "--format",
+            "json"
+        ])
+        .command,
+        Some(Command::List {
+            kind: ListKind::RuntimeCapability,
+            format: OutputFormat::Json
+        })
+    ));
+    assert!(matches!(
+        Cli::parse_from(["skill-kits", "plugin", "list"]).command,
+        Some(Command::Plugin {
+            command: PluginCommand::List {
+                format: OutputFormat::Table
+            }
+        })
+    ));
+    assert!(matches!(
+        Cli::parse_from(["skill-kits", "plugin", "status", "browser@openai-bundled"]).command,
+        Some(Command::Plugin {
+            command: PluginCommand::Status { query, format: OutputFormat::Table }
+        }) if query == "browser@openai-bundled"
+    ));
+    assert!(matches!(
+        Cli::parse_from(["skill-kits", "plugin", "enable", "browser@openai-bundled"]).command,
+        Some(Command::Plugin {
+            command: PluginCommand::Enable { query }
+        }) if query == "browser@openai-bundled"
+    ));
+    assert!(matches!(
+        Cli::parse_from(["skill-kits", "plugin", "disable", "browser@openai-bundled"]).command,
+        Some(Command::Plugin {
+            command: PluginCommand::Disable { query }
+        }) if query == "browser@openai-bundled"
+    ));
+    assert!(matches!(
+        Cli::parse_from(["skill-kits", "plugin", "scan", "--format", "json"]).command,
+        Some(Command::Plugin {
+            command: PluginCommand::Scan {
+                format: OutputFormat::Json
+            }
+        })
     ));
 }
 

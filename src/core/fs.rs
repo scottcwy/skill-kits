@@ -59,18 +59,22 @@ pub fn atomic_write_toml<T>(path: &Utf8Path, value: &T) -> Result<()>
 where
     T: Serialize,
 {
+    let bytes = toml::to_string_pretty(value)?;
+    atomic_write_string(path, &bytes)
+}
+
+pub fn atomic_write_string(path: &Utf8Path, contents: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         ensure_dir(parent)?;
     }
 
-    let bytes = toml::to_string_pretty(value)?;
     let temp_path = temp_path_for(path);
     let write_result = (|| -> Result<()> {
         let mut temp_file = OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&temp_path)?;
-        temp_file.write_all(bytes.as_bytes())?;
+        temp_file.write_all(contents.as_bytes())?;
         temp_file.sync_all()?;
         drop(temp_file);
         fs::rename(&temp_path, path)?;
