@@ -2,6 +2,10 @@ use super::{AgentAction, ProjectAction, SkillAction};
 use crate::gui::state::NavigationView;
 
 pub const FONT_NAME: &str = "font_awesome_7_free_solid";
+pub const UI_FONT_NAME: &str = "geist_regular";
+pub const MONO_FONT_NAME: &str = "geist_mono_regular";
+pub const CJK_FONT_NAME: &str = "skill_kits_cjk_fallback";
+pub const CJK_FONT_Y_OFFSET_FACTOR: f32 = 0.30;
 
 pub const DASHBOARD: &str = "\u{f624}";
 pub const SKILL: &str = "\u{f72b}";
@@ -53,19 +57,71 @@ pub fn install_font(ctx: &egui::Context) {
 
 pub fn install_font_definitions(fonts: &mut egui::FontDefinitions) {
     fonts.font_data.insert(
+        UI_FONT_NAME.to_string(),
+        egui::FontData::from_static(include_bytes!(
+            "../../assets/fonts/geist/Geist-Regular.ttf"
+        )),
+    );
+    fonts.font_data.insert(
+        MONO_FONT_NAME.to_string(),
+        egui::FontData::from_static(include_bytes!(
+            "../../assets/fonts/geist/GeistMono-Regular.ttf"
+        )),
+    );
+    if let Some(font_data) = load_cjk_fallback_font() {
+        fonts
+            .font_data
+            .insert(CJK_FONT_NAME.to_string(), font_data);
+    }
+    fonts.font_data.insert(
         FONT_NAME.to_string(),
         egui::FontData::from_static(include_bytes!(
             "../../assets/fonts/fontawesome/FontAwesome7Free-Solid-900.otf"
         )),
     );
-    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-        fonts
-            .families
-            .entry(family)
-            .or_default()
-            .push(FONT_NAME.to_string());
+    for (family, primary_font) in [
+        (egui::FontFamily::Proportional, UI_FONT_NAME),
+        (egui::FontFamily::Monospace, MONO_FONT_NAME),
+    ] {
+        let family_fonts = fonts.families.entry(family).or_default();
+        if !family_fonts.iter().any(|name| name == primary_font) {
+            family_fonts.insert(0, primary_font.to_string());
+        }
+        if fonts.font_data.contains_key(CJK_FONT_NAME)
+            && !family_fonts.iter().any(|name| name == CJK_FONT_NAME)
+        {
+            family_fonts.push(CJK_FONT_NAME.to_string());
+        }
+        family_fonts.push(FONT_NAME.to_string());
     }
 }
+
+fn load_cjk_fallback_font() -> Option<egui::FontData> {
+    for path in CJK_FONT_CANDIDATES {
+        if let Ok(bytes) = std::fs::read(path) {
+            return Some(egui::FontData::from_owned(bytes).tweak(egui::FontTweak {
+                scale: 1.0,
+                y_offset_factor: CJK_FONT_Y_OFFSET_FACTOR,
+                y_offset: 0.0,
+                baseline_offset_factor: 0.0,
+            }));
+        }
+    }
+    None
+}
+
+const CJK_FONT_CANDIDATES: &[&str] = &[
+    "/System/Library/Fonts/Hiragino Sans GB.ttc",
+    "/System/Library/Fonts/STHeiti Light.ttc",
+    "/System/Library/Fonts/STHeiti Medium.ttc",
+    "/System/Library/Fonts/PingFang.ttc",
+    "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJKsc-Regular.otf",
+    "C:\\Windows\\Fonts\\msyh.ttc",
+    "C:\\Windows\\Fonts\\simsun.ttc",
+];
 
 pub fn button_label(icon: &str, label: &str) -> String {
     format!("{icon} {label}")

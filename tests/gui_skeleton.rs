@@ -221,6 +221,71 @@ fn gui_icons_map_navigation_actions_and_status_without_mixing_plugin_toggles() {
 }
 
 #[test]
+fn gui_font_stack_includes_cjk_fallback_before_icon_font() {
+    let mut fonts = egui::FontDefinitions::default();
+
+    icons::install_font_definitions(&mut fonts);
+
+    let family = fonts
+        .families
+        .get(&egui::FontFamily::Proportional)
+        .expect("proportional font family");
+    let cjk_index = family
+        .iter()
+        .position(|name| name == icons::CJK_FONT_NAME)
+        .expect("CJK fallback font should be registered");
+    let icon_index = family
+        .iter()
+        .position(|name| name == icons::FONT_NAME)
+        .expect("icon font should be registered");
+    assert!(
+        cjk_index < icon_index,
+        "CJK fallback must be tried before FontAwesome so Chinese glyphs do not render as boxes"
+    );
+}
+
+#[test]
+fn gui_font_stack_uses_bundled_geist_as_primary_ui_font() {
+    let mut fonts = egui::FontDefinitions::default();
+
+    icons::install_font_definitions(&mut fonts);
+
+    let proportional = fonts
+        .families
+        .get(&egui::FontFamily::Proportional)
+        .expect("proportional font family");
+    let monospace = fonts
+        .families
+        .get(&egui::FontFamily::Monospace)
+        .expect("monospace font family");
+
+    assert_eq!(proportional.first().map(String::as_str), Some(icons::UI_FONT_NAME));
+    assert_eq!(monospace.first().map(String::as_str), Some(icons::MONO_FONT_NAME));
+    assert!(fonts.font_data.contains_key(icons::UI_FONT_NAME));
+    assert!(fonts.font_data.contains_key(icons::MONO_FONT_NAME));
+}
+
+#[test]
+fn gui_cjk_fallback_shifts_glyphs_down_to_align_mixed_text_baseline() {
+    let mut fonts = egui::FontDefinitions::default();
+
+    icons::install_font_definitions(&mut fonts);
+
+    let font_data = fonts
+        .font_data
+        .get(icons::CJK_FONT_NAME)
+        .expect("CJK fallback font should be registered");
+    assert_eq!(
+        font_data.tweak.y_offset_factor,
+        icons::CJK_FONT_Y_OFFSET_FACTOR
+    );
+    assert!(
+        font_data.tweak.y_offset_factor >= 0.30,
+        "CJK glyphs should be nudged downward enough for Geist/CJK mixed skill names to share a visual baseline"
+    );
+}
+
+#[test]
 fn gui_view_history_moves_backward_and_forward_without_mutating_actions() {
     let mut model = GuiModel::default();
     assert_eq!(model.active_view, NavigationView::Dashboard);
