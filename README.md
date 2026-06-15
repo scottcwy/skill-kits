@@ -1,8 +1,8 @@
 # Skill-kits
 
-Skill-kits 是一个本地优先的 AI Agent Skills 管理器。
+Skill-kits是一个零依赖 - 单二进制文件 - 任何LLM - 多智能体的 AI Agent Skills 管理工具
 
-它用一个 Rust 单二进制文件，扫描并管理 Codex、Claude Code、Gemini CLI 等工具实际读取的本地 Skill 目录，帮助你查看 Skill 的启用、禁用、无效、只读和项目级状态。
+它用一个 Rust 单二进制文件，扫描并管理 Codex、Claude Code、Gemini CLI 等Agent的 Skill 目录，帮助你处理 Skill 的启动、禁用以及实现Skill的项目级启用。
 
 ## 特性
 
