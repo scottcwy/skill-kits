@@ -19,8 +19,7 @@
 <p align="center">
   <a href="#为什么需要-skill-kits">为什么</a>&nbsp;&nbsp;&bull;&nbsp;&nbsp;
   <a href="#核心能力">核心能力</a>&nbsp;&nbsp;&bull;&nbsp;&nbsp;
-  <a href="#快速开始">快速开始</a>&nbsp;&nbsp;&bull;&nbsp;&nbsp;
-  <a href="#截图与素材">截图与素材</a>
+  <a href="#快速开始">快速开始</a>
 </p>
 
 <br/>
@@ -240,43 +239,6 @@ cargo fmt --all --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
-
-## 截图与素材
-
-README 当前使用了三张真实产品截图：
-
-| 文件 | 状态 | 内容 |
-| --- | --- | --- |
-| `media/dashboard.png` | 已使用 | 首屏主图，展示 Dashboard 指标卡和 macOS 原生窗口质感 |
-| `media/skills.png` | 已使用 | 展示 Skill 列表、Agent、Status、Source 和筛选器 |
-| `media/agents.png` | 已使用 | 展示 Codex、Claude Code、Gemini CLI 与 Custom Agents 配置 |
-| `media/hero.svg` | 备用 | 原创黑灰网格工作台背景，可用于未来产品合成图 |
-
-后续还可以补充：
-
-| 文件 | 建议内容 | 重点 |
-| --- | --- | --- |
-| `media/projects.png` | GUI Projects view | 展示项目级 Skill、Writable、状态和操作说明 |
-| `media/plugins.png` | GUI Plugins view | 展示 Codex 插件和 runtime capabilities |
-| `media/cli-status.png` | 终端 `skill-kits status` | 展示 table 输出和本地状态 |
-| `media/cli-plugin.png` | 终端 `skill-kits plugin list` | 展示插件、provider、capabilities |
-
-截图建议：
-
-- 使用深色桌面环境，窗口宽度至少 1280px。
-- 先准备 3-5 个 Skill、至少 1 个 disabled、1 个 read-only/plugin source、1 个 project Skill。
-- 路径可以是真实路径，但建议避免露出 token、私有项目名或公司路径。
-- 如果要做更强的首屏，可以用 `hero.svg` 做黑灰网格背景，把 Dashboard 截图居中，再叠两张 CLI/Inspector 小浮层。
-
-如果想换掉当前 `hero.svg`，可以找或生成这类背景：dark monochrome grid、abstract black product hero、minimal command center、linear-style workbench。注意不要直接使用 Linear 官方页面素材；更稳的是用原创生成图或公开图库中的抽象深色背景。
-
-可参考的素材入口：
-
-- [Unsplash: Abstract Grid](https://unsplash.com/s/photos/abstract-grid)
-- [Unsplash: Dark Abstract](https://unsplash.com/s/photos/dark-abstract)
-- [Unsplash: Dark abstract background with faint grid lines](https://unsplash.com/photos/dark-abstract-background-with-faint-grid-lines-Qj8haLTfHzs)
-- [Pexels: Black Grid](https://www.pexels.com/search/black%20grid/)
-- [Pexels: Abstract Lines](https://www.pexels.com/search/abstract%20lines/)
 
 ## Roadmap
 
