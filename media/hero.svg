@@ -1,0 +1,97 @@
+<svg width="1720" height="720" viewBox="0 0 1720 720" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1720" height="720" fill="#050506"/>
+  <defs>
+    <linearGradient id="beam" x1="183" y1="18" x2="1414" y2="696" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#f2f2f2" stop-opacity="0.18"/>
+      <stop offset="0.38" stop-color="#6f737a" stop-opacity="0.08"/>
+      <stop offset="1" stop-color="#050506" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="392" y1="117" x2="1326" y2="614" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1c1d20"/>
+      <stop offset="1" stop-color="#0b0c0e"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(946 198) rotate(112) scale(560 840)">
+      <stop stop-color="#ffffff" stop-opacity="0.12"/>
+      <stop offset="0.52" stop-color="#9ea3aa" stop-opacity="0.05"/>
+      <stop offset="1" stop-color="#050506" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="44" height="44" patternUnits="userSpaceOnUse">
+      <path d="M44 0H0V44" stroke="#ffffff" stroke-opacity="0.055"/>
+    </pattern>
+    <filter id="softShadow" x="293" y="68" width="1134" height="600" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feOffset dy="28"/>
+      <feGaussianBlur stdDeviation="38"/>
+      <feComposite in2="hardAlpha" operator="out"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.75 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_1"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_1" result="shape"/>
+    </filter>
+  </defs>
+
+  <rect width="1720" height="720" fill="url(#glow)"/>
+  <rect width="1720" height="720" fill="url(#grid)"/>
+  <path d="M83 33C357 226 619 316 944 347C1229 374 1442 488 1647 661" stroke="url(#beam)" stroke-width="160" stroke-linecap="round"/>
+
+  <g filter="url(#softShadow)">
+    <rect x="340" y="112" width="1040" height="500" rx="18" fill="url(#panel)" stroke="#34363b"/>
+    <rect x="341" y="113" width="1038" height="54" rx="17" fill="#101114"/>
+    <circle cx="371" cy="140" r="6" fill="#5a5c61"/>
+    <circle cx="393" cy="140" r="6" fill="#46484d"/>
+    <circle cx="415" cy="140" r="6" fill="#34363b"/>
+    <text x="458" y="146" fill="#f2f3f3" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="18" font-weight="600">Skill-kits</text>
+    <text x="566" y="146" fill="#858b96" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">local Agent Space workbench</text>
+
+    <rect x="365" y="190" width="220" height="388" rx="10" fill="#0b0c0e" stroke="#25272d"/>
+    <text x="389" y="228" fill="#f2f3f3" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="15" font-weight="600">Workspace</text>
+    <rect x="389" y="252" width="172" height="32" rx="6" fill="#202227"/>
+    <text x="410" y="273" fill="#f2f3f3" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13">Dashboard</text>
+    <text x="410" y="319" fill="#a6abb3" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13">Skills</text>
+    <text x="410" y="359" fill="#a6abb3" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13">Agents</text>
+    <text x="410" y="399" fill="#a6abb3" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13">Projects</text>
+    <text x="410" y="439" fill="#a6abb3" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13">Plugins</text>
+    <rect x="389" y="510" width="172" height="42" rx="7" fill="#111216" stroke="#25272d"/>
+    <text x="410" y="535" fill="#858b96" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12">~/.skill-kits</text>
+
+    <rect x="609" y="190" width="500" height="388" rx="10" fill="#0b0c0e" stroke="#25272d"/>
+    <text x="633" y="228" fill="#f2f3f3" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="15" font-weight="600">Agent Space Skills</text>
+    <text x="991" y="228" fill="#858b96" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12">scan indexed 42</text>
+    <line x1="633" y1="254" x2="1085" y2="254" stroke="#25272d"/>
+    <text x="633" y="282" fill="#858b96" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12">Skill</text>
+    <text x="804" y="282" fill="#858b96" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12">Agent</text>
+    <text x="914" y="282" fill="#858b96" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12">Status</text>
+    <rect x="625" y="300" width="468" height="38" rx="6" fill="#17191d"/>
+    <text x="641" y="324" fill="#f2f3f3" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13">frontend-design</text>
+    <text x="804" y="324" fill="#c7cbd1" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12">codex</text>
+    <text x="914" y="324" fill="#67a878" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13">Enabled</text>
+    <text x="641" y="370" fill="#d8dadd" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13">playwright</text>
+    <text x="804" y="370" fill="#c7cbd1" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12">claude</text>
+    <text x="914" y="370" fill="#c5a365" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13">Read-only</text>
+    <text x="641" y="416" fill="#d8dadd" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13">pdf</text>
+    <text x="804" y="416" fill="#c7cbd1" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12">codex</text>
+    <text x="914" y="416" fill="#d06b6b" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13">Invalid</text>
+    <text x="641" y="462" fill="#d8dadd" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13">github:yeet</text>
+    <text x="804" y="462" fill="#c7cbd1" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12">codex</text>
+    <text x="914" y="462" fill="#67a878" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13">Enabled</text>
+    <rect x="633" y="508" width="198" height="36" rx="7" fill="#f2f3f3"/>
+    <text x="655" y="531" fill="#111216" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13" font-weight="600">Scan Agent Spaces</text>
+    <rect x="845" y="508" width="142" height="36" rx="7" fill="#17191d" stroke="#34363b"/>
+    <text x="869" y="531" fill="#f2f3f3" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13" font-weight="600">Run doctor</text>
+
+    <rect x="1132" y="190" width="220" height="388" rx="10" fill="#0b0c0e" stroke="#25272d"/>
+    <text x="1156" y="228" fill="#f2f3f3" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="15" font-weight="600">Inspector</text>
+    <text x="1156" y="268" fill="#858b96" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="12">Selected Skill</text>
+    <text x="1156" y="292" fill="#f2f3f3" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="14">frontend-design</text>
+    <line x1="1156" y1="318" x2="1328" y2="318" stroke="#25272d"/>
+    <text x="1156" y="352" fill="#858b96" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12">~/.codex/skills</text>
+    <text x="1156" y="382" fill="#858b96" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12">SKILL.md</text>
+    <rect x="1156" y="414" width="72" height="24" rx="5" fill="#132018" stroke="#274f33"/>
+    <text x="1172" y="431" fill="#67a878" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="12">healthy</text>
+    <rect x="1156" y="462" width="150" height="34" rx="7" fill="#17191d" stroke="#34363b"/>
+    <text x="1177" y="484" fill="#f2f3f3" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13" font-weight="600">Disable instance</text>
+    <text x="1156" y="536" fill="#737983" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="12">Renames only this Agent Space copy.</text>
+  </g>
+
+  <text x="860" y="682" text-anchor="middle" fill="#858b96" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="15">Local-first Skill operations for Codex, Claude Code, Gemini CLI, and custom agents.</text>
+</svg>
